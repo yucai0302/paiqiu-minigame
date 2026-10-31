@@ -1,0 +1,15 @@
+node_modules/
+dist/
+build/
+logs/
+.env
+.env.*
+*.local
+.DS_Store
+Thumbs.db
+*.tsbuildinfo
+.screenshots/
+
+# 本地网页预览的构建产物（js/main.js 保留，方便直接导入微信开发者工具）
+minigame/web/bundle.js
+minigame/web/bundle.js.map

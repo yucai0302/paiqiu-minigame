@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover"
+    />
+    <title>Q版排球 · 竖屏手柄版</title>
+    <style>
+      * {
+        margin: 0;
+        padding: 0;
+        box-sizing: border-box;
+      }
+      html,
+      body {
+        width: 100%;
+        height: 100%;
+        overflow: hidden;
+        background: #0d1520;
+        font-family: -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif;
+      }
+      body {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+      #app {
+        position: relative;
+        width: 390px;
+        height: 844px;
+        background: #cfe8fa;
+        overflow: hidden;
+        touch-action: none;
+        user-select: none;
+        -webkit-user-select: none;
+      }
+      #scene {
+        display: block;
+        width: 100%;
+        height: 100%;
+        touch-action: none;
+      }
+      #err {
+        position: absolute;
+        left: 0;
+        top: 0;
+        right: 0;
+        max-height: 100%;
+        overflow: auto;
+        padding: 12px;
+        background: rgba(120, 0, 0, 0.92);
+        color: #fff;
+        font: 12px/1.5 Consolas, monospace;
+        white-space: pre-wrap;
+        z-index: 99;
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"><canvas id="scene"></canvas><pre id="err"></pre></div>
+    <script>
+      (function () {
+        var box = document.getElementById('err');
+        function show(msg) {
+          box.style.display = 'block';
+          box.textContent += msg + '\n';
+        }
+        window.addEventListener('error', function (e) {
+          show('Error: ' + (e.message || e.error) + '\n' + (e.error && e.error.stack ? e.error.stack : ''));
+        });
+        window.addEventListener('unhandledrejection', function (e) {
+          show('Rejection: ' + (e.reason && e.reason.stack ? e.reason.stack : e.reason));
+        });
+      })();
+    </script>
+    <script src="./bundle.js"></script>
+  </body>
+</html>

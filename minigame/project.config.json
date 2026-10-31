@@ -1,0 +1,30 @@
+{
+  "description": "Q版排球微信小游戏",
+  "projectname": "paiqiu-minigame",
+  "appid": "touristappid",
+  "compileType": "game",
+  "libVersion": "3.9.0",
+  "miniprogramRoot": "",
+  "setting": {
+    "urlCheck": false,
+    "es6": false,
+    "enhance": false,
+    "postcss": false,
+    "minified": false,
+    "newFeature": true,
+    "autoAudits": false,
+    "uglifyFileName": false
+  },
+  "packOptions": {
+    "ignore": [
+      { "type": "folder", "value": "src" },
+      { "type": "folder", "value": "web" },
+      { "type": "folder", "value": "node_modules" },
+      { "type": "file", "value": "build.mjs" },
+      { "type": "file", "value": "tsconfig.json" },
+      { "type": "file", "value": "package.json" },
+      { "type": "file", "value": "package-lock.json" }
+    ]
+  },
+  "condition": {}
+}

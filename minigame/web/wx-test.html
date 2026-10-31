@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>小游戏运行时模拟（wx 垫片）</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        height: 100%;
+        background: #0d1520;
+        display: flex;
+        justify-content: center;
+        overflow: hidden;
+      }
+      canvas {
+        display: block;
+        width: 390px;
+        height: 844px;
+      }
+    </style>
+  </head>
+  <body>
+    <script>
+      // 用浏览器模拟小游戏运行时，验证 wx 分支与垫片顺序
+      (function () {
+        var realDoc = document;
+        var handlers = { start: [], move: [], end: [], cancel: [] };
+        var active = new Map();
+
+        function emit(type, payload) {
+          handlers[type].forEach(function (cb) {
+            cb(payload);
+          });
+        }
+
+        window.wx = {
+          createCanvas: function () {
+            var c = realDoc.createElement('canvas');
+            realDoc.body.appendChild(c);
+            return c;
+          },
+          createOffscreenCanvas: function (o) {
+            var c = realDoc.createElement('canvas');
+            c.width = (o && o.width) || 1;
+            c.height = (o && o.height) || 1;
+            return c;
+          },
+          getWindowInfo: function () {
+            return {
+              windowWidth: 390,
+              windowHeight: 844,
+              pixelRatio: 2,
+              safeArea: { top: 0, bottom: 844 },
+            };
+          },
+          getSystemInfoSync: function () {
+            return this.getWindowInfo();
+          },
+          onTouchStart: function (cb) {
+            handlers.start.push(cb);
+          },
+          onTouchMove: function (cb) {
+            handlers.move.push(cb);
+          },
+          onTouchEnd: function (cb) {
+            handlers.end.push(cb);
+          },
+          onTouchCancel: function (cb) {
+            handlers.cancel.push(cb);
+          },
+          createWebAudioContext: function () {
+            return null;
+          },
+          vibrateShort: function () {},
+        };
+
+        window.__touch = function (type, id, x, y) {
+          var t = { identifier: id, clientX: x, clientY: y };
+          if (type === 'start') {
+            active.set(id, t);
+            emit('start', { changedTouches: [t], touches: Array.from(active.values()) });
+          } else if (type === 'move') {
+            active.set(id, t);
+            emit('move', { changedTouches: [t], touches: Array.from(active.values()) });
+          } else if (type === 'end') {
+            active.delete(id);
+            emit('end', { changedTouches: [t], touches: Array.from(active.values()) });
+          }
+        };
+      })();
+    </script>
+    <script src="../js/main.js"></script>
+  </body>
+</html>
