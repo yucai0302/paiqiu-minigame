@@ -1,7 +1,7 @@
 {
   "name": "paiqiu-minigame",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Q版排球微信小游戏（竖屏 + 底部手柄）",
   "scripts": {

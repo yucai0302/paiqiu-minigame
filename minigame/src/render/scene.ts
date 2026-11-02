@@ -9,11 +9,11 @@ import { BallView } from './ball-view';
 import { CharacterView } from './character';
 import { Effects } from './effects';
 
-/** 竖屏机位：保持桌面版俯角，整体后移以完整容纳球场宽度 */
+/** 竖屏机位：略抬高拉远，让远端看台与顶部灯光进入画面，增强场馆进深感 */
 const CAM = {
-  pos: new THREE.Vector3(0, 11.9, 19.6),
-  look: new THREE.Vector3(0, 0.55, 1.1),
-  fov: 54,
+  pos: new THREE.Vector3(0, 12.6, 20.8),
+  look: new THREE.Vector3(0, 0.85, 0.2),
+  fov: 55,
 };
 
 /** 表现层：只读取 World 状态，不写回任何模拟数据 */
@@ -59,24 +59,19 @@ export class SceneView {
     });
     this.renderer.setPixelRatio(dpr);
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+    // 显式固定色彩管线：全场景使用无光照材质，不依赖运行时灯光/色调映射差异
+    this.renderer.toneMapping = THREE.NoToneMapping;
     this.renderer.shadowMap.enabled = false;
     this.renderer.autoClear = false;
 
-    this.camera = new THREE.PerspectiveCamera(CAM.fov, width / (height - padHeight), 0.1, 260);
+    // near/far 收紧：提升移动设备 16 位深度缓冲下的精度，避免贴身部件深度冲突
+    this.camera = new THREE.PerspectiveCamera(CAM.fov, width / (height - padHeight), 0.5, 160);
     this.camera.position.copy(this.camPos);
     this.camera.lookAt(this.camLook);
 
     this.scene.background = skyTexture();
-    this.scene.fog = new THREE.Fog(0xe2f1fd, 38, 100);
-
-    const hemi = new THREE.HemisphereLight(0xeaf7ff, 0xffffff, 1.15);
-    this.scene.add(hemi);
-    const dir = new THREE.DirectionalLight(0xfff6e6, 1.65);
-    dir.position.set(7, 13, 9);
-    this.scene.add(dir);
-    const fill = new THREE.DirectionalLight(0xbfe0ff, 0.45);
-    fill.position.set(-8, 6, -10);
-    this.scene.add(fill);
+    // 深色雾与场馆背景衔接，远处看台自然没入暗部
+    this.scene.fog = new THREE.Fog(0x141f33, 34, 95);
 
     this.scene.add(this.arena.group);
     this.scene.add(this.ballView.group);

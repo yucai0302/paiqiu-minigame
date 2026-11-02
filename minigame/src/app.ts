@@ -197,7 +197,11 @@ export class App {
       if (!this.screens.visible) this.pad.onMove(active);
     });
     this.platform.onTouchEnd((changed, active) => {
-      if (!this.screens.visible) this.pad.onEnd(changed, active);
+      if (this.screens.visible) {
+        this.screens.touchEnd(changed);
+        return;
+      }
+      this.pad.onEnd(changed, active);
     });
     this.platform.onTouchCancel(() => this.pad.onCancel());
   }
@@ -230,6 +234,7 @@ export class App {
 
     this.hud.update(this.world);
     this.hud.tick(dt);
+    this.screens.update(dt);
     this.scene.render();
     this.ui.render(this.scene.renderer);
   };

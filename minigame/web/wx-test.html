@@ -34,17 +34,36 @@
           });
         }
 
+        var rawCanvas = /[?&]rawcanvas=1/.test(location.search);
+
+        // ?rawcanvas=1 模拟 PC 微信 runtime：canvas 是原生对象，没有
+        // addEventListener / style / clientWidth 等 DOM 接口
+        function stripDom(c) {
+          if (!rawCanvas) return c;
+          c.addEventListener = undefined;
+          c.removeEventListener = undefined;
+          c.setAttribute = undefined;
+          c.getBoundingClientRect = undefined;
+          c.style = undefined;
+          c.clientWidth = undefined;
+          c.clientHeight = undefined;
+          return c;
+        }
+
+        var canvasCalls = 0;
         window.wx = {
+          // 与真机一致：首次调用返回主屏画布（上屏），其后返回离屏画布
           createCanvas: function () {
             var c = realDoc.createElement('canvas');
-            realDoc.body.appendChild(c);
-            return c;
+            canvasCalls += 1;
+            if (canvasCalls === 1) realDoc.body.appendChild(c);
+            return stripDom(c);
           },
           createOffscreenCanvas: function (o) {
             var c = realDoc.createElement('canvas');
             c.width = (o && o.width) || 1;
             c.height = (o && o.height) || 1;
-            return c;
+            return stripDom(c);
           },
           getWindowInfo: function () {
             return {
@@ -55,7 +74,14 @@
             };
           },
           getSystemInfoSync: function () {
-            return this.getWindowInfo();
+            return {
+              windowWidth: 390,
+              windowHeight: 844,
+              screenWidth: 390,
+              screenHeight: 844,
+              pixelRatio: 2,
+              safeArea: { top: 0, bottom: 844 },
+            };
           },
           onTouchStart: function (cb) {
             handlers.start.push(cb);
@@ -74,6 +100,17 @@
           },
           vibrateShort: function () {},
         };
+
+        // ?legacywx=1 模拟旧基础库 / PC 微信 runtime：无 createOffscreenCanvas、无 getWindowInfo
+        if (/[?&]legacywx=1/.test(location.search)) {
+          delete window.wx.createOffscreenCanvas;
+          delete window.wx.getWindowInfo;
+        }
+
+        // ?safefx=1 开启安全渲染模式（纯色地板、关光束、隐藏名牌/号码）
+        if (/[?&]safefx=1/.test(location.search)) {
+          window.__SAFEFX__ = 1;
+        }
 
         window.__touch = function (type, id, x, y) {
           var t = { identifier: id, clientX: x, clientY: y };

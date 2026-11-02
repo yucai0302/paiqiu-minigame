@@ -13,7 +13,7 @@ export class Hud {
   private scoreSprite: THREE.Sprite;
   private announceSprite: THREE.Sprite;
   private touchSprite: THREE.Sprite;
-  private serveTrack: THREE.Mesh;
+  private serveTrack: THREE.Sprite;
   private serveFill: THREE.Mesh;
   private pauseBg: THREE.Mesh;
   private pauseIcon: THREE.Sprite;
@@ -59,29 +59,39 @@ export class Hud {
     );
     this.root.add(this.touchSprite);
 
-    this.serveTrack = new THREE.Mesh(
-      new THREE.PlaneGeometry(180, 8),
+    // 蓄力条：圆角深色轨道（与手柄区深色带统一）+ 绿→黄→红渐变填充
+    const trackC = createUiCanvas(190, 14, 2);
+    roundedRect(trackC.ctx, 1, 1, 188, 12, 6);
+    trackC.ctx.fillStyle = 'rgba(10,17,28,0.55)';
+    trackC.ctx.fill();
+    trackC.ctx.lineWidth = 1.5;
+    trackC.ctx.strokeStyle = 'rgba(255,255,255,0.4)';
+    trackC.ctx.stroke();
+    this.serveTrack = uiSprite(makeTexture(trackC.canvas), 190, 14, W / 2, H - (this.y0 - 24), 11);
+    this.serveTrack.visible = false;
+    this.root.add(this.serveTrack);
+
+    const fillC = createUiCanvas(178, 8, 2);
+    const fillGrad = fillC.ctx.createLinearGradient(0, 0, 178, 0);
+    fillGrad.addColorStop(0, '#34d399');
+    fillGrad.addColorStop(0.55, '#fbbf24');
+    fillGrad.addColorStop(1, '#ff5d73');
+    roundedRect(fillC.ctx, 0, 0, 178, 8, 4);
+    fillC.ctx.fillStyle = fillGrad;
+    fillC.ctx.fill();
+    const fillGeo = new THREE.PlaneGeometry(1, 8);
+    fillGeo.translate(0.5, 0, 0);
+    this.serveFill = new THREE.Mesh(
+      fillGeo,
       new THREE.MeshBasicMaterial({
-        color: 0xffffff,
+        map: makeTexture(fillC.canvas),
         transparent: true,
-        opacity: 0.62,
         depthTest: false,
         depthWrite: false,
         side: THREE.DoubleSide,
       }),
     );
-    this.serveTrack.position.set(W / 2, H - (this.y0 - 24), 0);
-    this.serveTrack.renderOrder = 11;
-    this.serveTrack.visible = false;
-    this.root.add(this.serveTrack);
-
-    const fillGeo = new THREE.PlaneGeometry(1, 8);
-    fillGeo.translate(0.5, 0, 0);
-    this.serveFill = new THREE.Mesh(
-      fillGeo,
-      new THREE.MeshBasicMaterial({ color: 0x35c47a, depthTest: false, depthWrite: false, side: THREE.DoubleSide }),
-    );
-    this.serveFill.position.set(W / 2 - 90, H - (this.y0 - 24), 0);
+    this.serveFill.position.set(W / 2 - 89, H - (this.y0 - 24), 0);
     this.serveFill.renderOrder = 12;
     this.serveFill.visible = false;
     this.root.add(this.serveFill);
@@ -115,7 +125,7 @@ export class Hud {
   update(world: World): void {
     const clock = Math.ceil(world.clock);
     const warn = world.clock <= 5 && (world.phase === 'rally' || world.phase === 'serve');
-    const key = `${clock}|${world.scores[0]}|${world.scores[1]}|${world.setIndex}|${world.setsWon[0]}|${world.setsWon[1]}|${warn}`;
+    const key = `${clock}|${world.scores[0]}|${world.scores[1]}|${world.setIndex}|${world.setsWon[0]}|${world.setsWon[1]}|${warn}|${world.serverId}`;
     if (key !== this.scoreKey) {
       this.scoreKey = key;
       this.drawScore(world, clock, warn);
@@ -133,7 +143,7 @@ export class Hud {
     this.serveFill.visible = serving;
     if (serving && local) {
       const ratio = Math.max(0.03, Math.min(1, local.charge));
-      this.serveFill.scale.x = 180 * ratio;
+      this.serveFill.scale.x = 178 * ratio;
     }
   }
 
@@ -189,53 +199,77 @@ export class Hud {
   private drawScore(world: World, clock: number, warn: boolean): void {
     const { canvas, ctx } = createUiCanvas(330, 96, 2);
     const [s0, s1] = world.scores;
+    const server = world.players.find((p) => p.id === world.serverId);
+    const serveTeam = server ? server.team : -1;
 
-    roundedRect(ctx, 113, 0, 104, 30, 15);
-    ctx.fillStyle = 'rgba(255,255,255,0.96)';
+    // 深色电子屏面板
+    roundedRect(ctx, 1, 1, 328, 94, 14);
+    ctx.fillStyle = 'rgba(10,17,30,0.94)';
     ctx.fill();
-    ctx.textAlign = 'center';
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = 'rgba(120,160,220,0.4)';
+    ctx.stroke();
+    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+    ctx.beginPath();
+    ctx.moveTo(16, 3);
+    ctx.lineTo(314, 3);
+    ctx.stroke();
+
     ctx.textBaseline = 'middle';
-    ctx.fillStyle = warn ? '#e14b4b' : '#15273b';
-    ctx.font = `800 20px ${FONT}`;
-    ctx.fillText(String(clock), 165, 16);
 
-    roundedRect(ctx, 3, 34, 324, 44, 22);
-    ctx.fillStyle = 'rgba(255,255,255,0.96)';
-    ctx.fill();
-
-    roundedRect(ctx, 18, 46, 68, 20, 10);
-    ctx.fillStyle = '#3ecf7a';
-    ctx.fill();
-    ctx.fillStyle = '#ffffff';
-    ctx.font = `800 11px ${FONT}`;
-    ctx.fillText('HOME', 52, 56);
-
-    roundedRect(ctx, 244, 46, 68, 20, 10);
-    ctx.fillStyle = '#ff5f87';
-    ctx.fill();
-    ctx.fillStyle = '#ffffff';
-    ctx.fillText('AWAY', 278, 56);
-
-    ctx.fillStyle = '#15273b';
-    ctx.font = `900 26px ${FONT}`;
-    ctx.fillText(String(s0), 132, 56);
-    ctx.fillText('—', 165, 54);
-    ctx.fillText(String(s1), 198, 56);
-
-    ctx.font = `600 11px ${FONT}`;
-    ctx.fillStyle = '#71829a';
+    // 顶行：SET | 计时 mm:ss | 目标分
+    ctx.font = `700 11px ${FONT}`;
+    ctx.fillStyle = '#8ea3c2';
     ctx.textAlign = 'left';
-    ctx.fillText(`SET ${world.setIndex + 1}`, 36, 87);
+    ctx.fillText(`SET ${world.setIndex + 1}`, 18, 16);
     ctx.textAlign = 'right';
-    ctx.fillText(`to ${MATCH.pointsToWinSet}`, 294, 87);
+    ctx.fillText(`to ${MATCH.pointsToWinSet}`, 312, 16);
+    ctx.textAlign = 'center';
+    ctx.font = `800 17px ${FONT}`;
+    ctx.fillStyle = warn ? '#ff6b6b' : '#e8f0ff';
+    ctx.fillText(`${Math.floor(clock / 60)}:${String(clock % 60).padStart(2, '0')}`, 165, 16);
 
+    // 队名胶囊（队色与角色球衣一致）+ 发球方亮点
+    const capsule = (x: number, label: string, color: string, serving: boolean): void => {
+      roundedRect(ctx, x, 34, 76, 26, 13);
+      ctx.fillStyle = color;
+      ctx.fill();
+      ctx.fillStyle = '#ffffff';
+      ctx.font = `900 12px ${FONT}`;
+      ctx.fillText(label, x + 38, 47);
+      if (serving) {
+        ctx.beginPath();
+        ctx.arc(x + 38, 28, 3.4, 0, Math.PI * 2);
+        ctx.fillStyle = '#ffd75e';
+        ctx.fill();
+      }
+    };
+    capsule(14, 'HOME', '#16a34a', serveTeam === 0);
+    capsule(240, 'AWAY', '#e1437a', serveTeam === 1);
+
+    // 大比分（弱描边模拟 LED 发光）
+    ctx.font = `900 38px ${FONT}`;
+    ctx.lineWidth = 5;
+    ctx.strokeStyle = 'rgba(120,190,255,0.35)';
+    ctx.lineJoin = 'round';
+    ctx.strokeText(`${s0} : ${s1}`, 165, 49);
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(`${s0} : ${s1}`, 165, 49);
+
+    // 局分指示（三局两胜）
     for (let i = 0; i < 3; i++) {
       ctx.beginPath();
-      ctx.arc(150 + i * 15, 87, 3.2, 0, Math.PI * 2);
+      ctx.arc(150 + i * 15, 80, 3.4, 0, Math.PI * 2);
       ctx.fillStyle =
-        i < world.setsWon[0] ? '#3ecf7a' : i >= 3 - world.setsWon[1] ? '#ff5f87' : '#dbe5f0';
+        i < world.setsWon[0] ? '#22c55e' : i >= 3 - world.setsWon[1] ? '#e1437a' : '#33415c';
       ctx.fill();
     }
+    ctx.font = `600 10px ${FONT}`;
+    ctx.fillStyle = '#66788f';
+    ctx.textAlign = 'left';
+    ctx.fillText('SETS', 18, 80);
+    ctx.textAlign = 'right';
+    ctx.fillText(`BO${MATCH.setsToWin * 2 - 1}`, 312, 80);
 
     setSpriteTexture(this.scoreSprite, makeTexture(canvas));
   }

@@ -1,4 +1,4 @@
-import { screen, wxCanvas } from './wx-shim';
+import { create2dCanvas, screen, wxCanvas } from './wx-shim';
 import type { CanvasLike, Platform, TouchPoint } from './types';
 
 declare const wx: any;
@@ -19,7 +19,7 @@ export function createWxPlatform(): Platform {
     safeTop: screen.safeTop,
     safeBottom: screen.safeBottom,
     createCanvas(width: number, height: number): CanvasLike {
-      return wx.createOffscreenCanvas({ type: '2d', width, height }) as CanvasLike;
+      return create2dCanvas(width, height) as CanvasLike;
     },
     raf(cb: (time: number) => void): number {
       if (typeof wxCanvas.requestAnimationFrame === 'function') return wxCanvas.requestAnimationFrame(cb);

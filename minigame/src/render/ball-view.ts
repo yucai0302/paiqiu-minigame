@@ -37,11 +37,7 @@ export class BallView {
 
   constructor() {
     const geo = new THREE.SphereGeometry(0.2, 24, 16);
-    const mat = new THREE.MeshStandardMaterial({
-      map: ballTexture(),
-      roughness: 0.55,
-      metalness: 0,
-    });
+    const mat = new THREE.MeshBasicMaterial({ map: ballTexture() });
     this.mesh = new THREE.Mesh(geo, mat);
     this.group.add(this.mesh);
 

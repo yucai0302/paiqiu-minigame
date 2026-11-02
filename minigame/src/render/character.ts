@@ -1,47 +1,73 @@
 import * as THREE from 'three';
 import { shadowTexture } from './arena';
+import { SAFE_MODE } from '../platform/flags';
 import type { Player } from '../sim/types';
+
+/**
+ * 低多边形卡通角色（重做版）。
+ *
+ * 与旧版的关键差异：
+ * 1. 移除 BackSide 描边壳 —— 旧形象在微信小游戏 WebGL 环境里因深度缓冲精度不足
+ *    （相机 near=0.1 / far=260），深青色描边壳会覆盖本体，导致整个人物看起来纯黑。
+ * 2. 全场景统一无光照材质（MeshBasicMaterial），不依赖运行时灯光/色彩管线，
+ *    避免开发者工具 lit shader 过曝导致的人物不可见；明暗靠贴图烘焙与配色。
+ * 3. 两队配色拉开明度与色相差距：我方草绿系、对手珊瑚红系，竖屏小屏一眼可辨。
+ */
 
 const SKINS = ['#f8cba6', '#eab792', '#d49a72', '#b07a52'];
 const HAIRS = ['#2e2622', '#4a2f22', '#1a2440', '#c9932f', '#e2643f', '#3f3a63'];
-const HOME_KIT = ['#2fd07a', '#1fbf85', '#4ade9a', '#16a86d'];
-const AWAY_KIT = ['#ff5f8f', '#ff7a5c', '#ef4f6d', '#ff9a63'];
-const OUTLINE_COLOR = 0x1d2b3d;
+const HOME_KIT = ['#22c55e', '#16a34a', '#4ade80', '#0d9488'];
+const AWAY_KIT = ['#ff5d73', '#fb7185', '#f97362', '#e1437a'];
+const TEAM_RING = ['#4dffa0', '#ff8a7a'];
 
 /** 角色用到的几何体全部共享，重开一局不会产生额外显存 */
 const G = {
-  head: new THREE.SphereGeometry(0.37, 24, 18),
-  body: new THREE.CapsuleGeometry(0.3, 0.18, 8, 20),
-  arm: new THREE.CapsuleGeometry(0.072, 0.24, 4, 10),
-  leg: new THREE.CapsuleGeometry(0.095, 0.24, 4, 10),
-  sleeve: new THREE.CapsuleGeometry(0.1, 0.07, 4, 12),
-  cuff: new THREE.TorusGeometry(0.1, 0.018, 6, 14),
-  wrist: new THREE.TorusGeometry(0.078, 0.02, 6, 14),
-  hand: new THREE.SphereGeometry(0.085, 10, 8),
-  shoe: new THREE.SphereGeometry(0.115, 12, 10),
-  sole: new THREE.BoxGeometry(0.22, 0.05, 0.32),
-  sock: new THREE.CylinderGeometry(0.098, 0.104, 0.12, 12),
-  knee: new THREE.TorusGeometry(0.098, 0.024, 6, 14),
-  shorts: new THREE.CylinderGeometry(0.265, 0.245, 0.22, 16),
-  waist: new THREE.TorusGeometry(0.255, 0.02, 6, 18),
-  stripe: new THREE.BoxGeometry(0.03, 0.3, 0.13),
+  head: new THREE.SphereGeometry(0.4, 24, 18),
+  body: new THREE.CapsuleGeometry(0.32, 0.16, 8, 20),
+  arm: new THREE.CapsuleGeometry(0.075, 0.22, 4, 10),
+  leg: new THREE.CapsuleGeometry(0.098, 0.22, 4, 10),
+  sleeve: new THREE.CapsuleGeometry(0.105, 0.06, 4, 12),
+  cuff: new THREE.TorusGeometry(0.104, 0.02, 6, 14),
+  wrist: new THREE.TorusGeometry(0.082, 0.022, 6, 14),
+  hand: new THREE.SphereGeometry(0.088, 10, 8),
+  shoe: new THREE.SphereGeometry(0.118, 12, 10),
+  sole: new THREE.BoxGeometry(0.22, 0.05, 0.33),
+  sock: new THREE.CylinderGeometry(0.1, 0.107, 0.12, 12),
+  knee: new THREE.TorusGeometry(0.1, 0.026, 6, 14),
+  shorts: new THREE.CylinderGeometry(0.28, 0.26, 0.23, 16),
+  waist: new THREE.TorusGeometry(0.268, 0.022, 6, 18),
+  stripe: new THREE.BoxGeometry(0.032, 0.3, 0.14),
+  chestStripe: new THREE.BoxGeometry(0.5, 0.07, 0.02),
   number: new THREE.PlaneGeometry(0.4, 0.4),
-  eye: new THREE.SphereGeometry(0.085, 12, 12),
+  badge: new THREE.PlaneGeometry(0.22, 0.22),
+  sclera: new THREE.SphereGeometry(0.098, 12, 12),
+  pupil: new THREE.SphereGeometry(0.048, 10, 10),
   glint: new THREE.SphereGeometry(0.026, 8, 8),
-  mouth: new THREE.TorusGeometry(0.055, 0.014, 6, 12, Math.PI),
-  cheek: new THREE.CircleGeometry(0.05, 14),
-  hairCap: new THREE.SphereGeometry(0.398, 24, 16, 0, Math.PI * 2, 0, Math.PI * 0.4),
-  hairBack: new THREE.SphereGeometry(0.37, 20, 14),
+  brow: new THREE.BoxGeometry(0.13, 0.032, 0.03),
+  mouth: new THREE.TorusGeometry(0.06, 0.016, 6, 12, Math.PI),
+  cheek: new THREE.CircleGeometry(0.055, 14),
+  ear: new THREE.SphereGeometry(0.07, 10, 8),
+  hairCap: new THREE.SphereGeometry(0.43, 24, 16, 0, Math.PI * 2, 0, Math.PI * 0.42),
+  hairBack: new THREE.SphereGeometry(0.4, 20, 14),
   hairBlob: new THREE.SphereGeometry(0.13, 12, 10),
-  hairBun: new THREE.SphereGeometry(0.115, 12, 10),
-  hairTail: new THREE.CapsuleGeometry(0.075, 0.2, 4, 10),
-  spike: new THREE.ConeGeometry(0.09, 0.2, 8),
-  headband: new THREE.TorusGeometry(0.39, 0.028, 8, 22),
+  hairBun: new THREE.SphereGeometry(0.118, 12, 10),
+  hairTail: new THREE.CapsuleGeometry(0.078, 0.2, 4, 10),
+  spike: new THREE.ConeGeometry(0.092, 0.21, 8),
+  headband: new THREE.TorusGeometry(0.42, 0.03, 8, 22),
   ring: new THREE.RingGeometry(0.46, 0.62, 44),
   shadow: new THREE.PlaneGeometry(1.45, 1.45),
 };
 
 const SHADOW_TEX = shadowTexture();
+
+/**
+ * 全场景统一使用无光照材质：不依赖运行时灯光/色彩管线，
+ * 浏览器、PC 微信、开发者工具三端渲染结果一致（IDE 的 lit shader 曾导致
+ * 受光材质整体过曝发白、人物不可见）。明暗层次由贴图烘焙与配色承担。
+ */
+function litMat(color: THREE.ColorRepresentation, _roughness: number): THREE.MeshBasicMaterial {
+  return new THREE.MeshBasicMaterial({ color });
+}
 
 function roundRect(
   g: CanvasRenderingContext2D,
@@ -93,8 +119,8 @@ function makeLabel(name: string, color: string, num: number): THREE.Sprite {
   return sprite;
 }
 
-/** 背后的球衣号码：只画数字，透明底 */
-function numberTexture(num: number): THREE.CanvasTexture {
+/** 球衣号码：白底圆牌 + 队色描边 + 深色数字，透明底 */
+function numberTexture(num: number, kit: string): THREE.CanvasTexture {
   const c = document.createElement('canvas');
   c.width = 128;
   c.height = 128;
@@ -102,12 +128,18 @@ function numberTexture(num: number): THREE.CanvasTexture {
   g.textAlign = 'center';
   g.textBaseline = 'middle';
   g.lineJoin = 'round';
-  g.font = '900 92px "PingFang SC","Microsoft YaHei",system-ui,sans-serif';
-  g.lineWidth = 14;
-  g.strokeStyle = 'rgba(14,30,46,0.9)';
-  g.strokeText(String(num), 64, 70);
-  g.fillStyle = '#ffffff';
-  g.fillText(String(num), 64, 70);
+
+  g.beginPath();
+  g.arc(64, 64, 56, 0, Math.PI * 2);
+  g.fillStyle = 'rgba(255,255,255,0.95)';
+  g.fill();
+  g.lineWidth = 8;
+  g.strokeStyle = kit;
+  g.stroke();
+
+  g.font = '900 64px "PingFang SC","Microsoft YaHei",system-ui,sans-serif';
+  g.fillStyle = '#1c2b3a';
+  g.fillText(String(num), 64, 68);
 
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
@@ -135,45 +167,33 @@ export class CharacterView {
   private cheerTimer = 0;
   private blinkTimer: number;
   private blinkPeriod: number;
-  private headBaseY = 1.47;
+  private headBaseY = 1.46;
 
   constructor(p: Player, idx: number) {
     const skin = SKINS[idx % SKINS.length];
     const hair = HAIRS[(idx * 3 + 1) % HAIRS.length];
     const kit = p.team === 0 ? HOME_KIT[idx % HOME_KIT.length] : AWAY_KIT[idx % AWAY_KIT.length];
-    const teamColor = p.team === 0 ? '#4dffa0' : '#ff8a7a';
+    const teamColor = TEAM_RING[p.team];
     this.blinkTimer = idx * 0.7;
     this.blinkPeriod = 3.1 + (idx % 3) * 0.55;
 
-    const kitMat = new THREE.MeshStandardMaterial({ color: kit, roughness: 0.58 });
-    const kitDark = new THREE.MeshStandardMaterial({
-      color: new THREE.Color(kit).multiplyScalar(0.62),
-      roughness: 0.68,
-    });
-    const trimMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.5 });
-    const skinMat = new THREE.MeshStandardMaterial({ color: skin, roughness: 0.64 });
-    const hairMat = new THREE.MeshStandardMaterial({ color: hair, roughness: 0.72 });
-    const eyeMat = new THREE.MeshStandardMaterial({ color: 0x23202a, roughness: 0.35 });
+    const kitMat = litMat(kit, 0.6);
+    const kitDark = litMat(new THREE.Color(kit).multiplyScalar(0.6), 0.68);
+    const trimMat = litMat(0xffffff, 0.5);
+    const skinMat = litMat(skin, 0.66);
+    const hairMat = litMat(hair, 0.74);
+    // 五官用无光照材质：任何运行时下都清晰可读
+    const scleraMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
+    const pupilMat = new THREE.MeshBasicMaterial({ color: 0x26202c });
     const glintMat = new THREE.MeshBasicMaterial({ color: 0xffffff });
-    const mouthMat = new THREE.MeshBasicMaterial({ color: 0x7a2e3a });
+    const browMat = new THREE.MeshBasicMaterial({ color: 0x3a2f28 });
+    const mouthMat = new THREE.MeshBasicMaterial({ color: 0x8a3040 });
     const cheekMat = new THREE.MeshBasicMaterial({
       color: 0xff8fa0,
       transparent: true,
-      opacity: 0.45,
+      opacity: 0.5,
       depthWrite: false,
     });
-    const outlineMat = new THREE.MeshBasicMaterial({ color: OUTLINE_COLOR, side: THREE.BackSide });
-
-    const outline = (
-      geo: THREE.BufferGeometry,
-      y: number,
-      s: number,
-    ): THREE.Mesh => {
-      const m = new THREE.Mesh(geo, outlineMat);
-      m.position.y = y;
-      m.scale.setScalar(s);
-      return m;
-    };
 
     // 影子 + 脚下光环（贴地，不随跳跃升高）
     this.shadowMat = new THREE.MeshBasicMaterial({
@@ -205,26 +225,50 @@ export class CharacterView {
     const body = new THREE.Mesh(G.body, kitMat);
     body.position.y = 0.8;
     this.rig.add(body);
-    this.rig.add(outline(G.body, 0.8, 1.045));
+
+    // 领口白边
+    const collar = new THREE.Mesh(G.waist, trimMat);
+    collar.rotation.x = Math.PI / 2;
+    collar.scale.setScalar(1.05);
+    collar.position.y = 1.02;
+    this.rig.add(collar);
+
+    // 胸前横条纹（队识别元素之一）
+    const chest = new THREE.Mesh(G.chestStripe, trimMat);
+    chest.position.set(0, 0.82, 0.32);
+    this.rig.add(chest);
 
     // 侧缝条纹
     for (const s of [-1, 1]) {
       const stripe = new THREE.Mesh(G.stripe, trimMat);
-      stripe.position.set(s * 0.286, 0.82, 0);
+      stripe.position.set(s * 0.302, 0.82, 0);
       this.rig.add(stripe);
     }
 
-    // 背后号码
-    const numMat = new THREE.MeshBasicMaterial({
-      map: numberTexture(p.id + 1),
-      transparent: true,
-      depthWrite: false,
-      toneMapped: false,
-    });
-    const number = new THREE.Mesh(G.number, numMat);
-    number.position.set(0, 0.86, -0.302);
-    number.rotation.y = Math.PI;
-    this.rig.add(number);
+    // 号码牌：背后大牌 + 胸前小牌，白底队色描边，正反都能认出队伍
+    if (!SAFE_MODE) {
+      const numTex = numberTexture(p.id + 1, kit);
+      const backMat = new THREE.MeshBasicMaterial({
+        map: numTex,
+        transparent: true,
+        depthWrite: false,
+        toneMapped: false,
+      });
+      const backNum = new THREE.Mesh(G.number, backMat);
+      backNum.position.set(0, 0.84, -0.328);
+      backNum.rotation.y = Math.PI;
+      this.rig.add(backNum);
+
+      const badgeMat = new THREE.MeshBasicMaterial({
+        map: numTex,
+        transparent: true,
+        depthWrite: false,
+        toneMapped: false,
+      });
+      const badge = new THREE.Mesh(G.badge, badgeMat);
+      badge.position.set(0.14, 0.68, 0.295);
+      this.rig.add(badge);
+    }
 
     // ---- 短裤 ----
     const shorts = new THREE.Mesh(G.shorts, kitDark);
@@ -232,12 +276,12 @@ export class CharacterView {
     this.rig.add(shorts);
     const waist = new THREE.Mesh(G.waist, trimMat);
     waist.rotation.x = Math.PI / 2;
-    waist.position.y = 0.648;
+    waist.position.y = 0.655;
     this.rig.add(waist);
     for (const s of [-1, 1]) {
       const stripe = new THREE.Mesh(G.stripe, trimMat);
       stripe.scale.set(0.7, 0.55, 0.55);
-      stripe.position.set(s * 0.243, 0.55, 0);
+      stripe.position.set(s * 0.258, 0.55, 0);
       this.rig.add(stripe);
     }
 
@@ -247,47 +291,69 @@ export class CharacterView {
 
     const skull = new THREE.Mesh(G.head, skinMat);
     this.head.add(skull);
-    this.head.add(outline(G.head, 0, 1.05));
+
+    // 耳朵
+    for (const s of [-1, 1]) {
+      const ear = new THREE.Mesh(G.ear, skinMat);
+      ear.position.set(s * 0.395, -0.02, 0);
+      ear.scale.set(0.5, 0.75, 0.6);
+      this.head.add(ear);
+    }
 
     this.buildHair(idx, hairMat, trimMat);
 
+    // 眼睛：白眼球 + 黑瞳 + 高光，三层都是无光照材质
     for (const s of [-1, 1]) {
       const eyeGroup = new THREE.Group();
-      eyeGroup.position.set(s * 0.135, 0.02, 0.332);
+      eyeGroup.position.set(s * 0.145, 0.03, 0.36);
 
-      const eye = new THREE.Mesh(G.eye, eyeMat);
-      eye.scale.set(1, 1.3, 0.55);
-      eyeGroup.add(eye);
+      const sclera = new THREE.Mesh(G.sclera, scleraMat);
+      sclera.scale.set(1, 1.25, 0.55);
+      eyeGroup.add(sclera);
+
+      const pupil = new THREE.Mesh(G.pupil, pupilMat);
+      pupil.position.set(0, -0.005, 0.055);
+      pupil.scale.set(1, 1.3, 0.5);
+      eyeGroup.add(pupil);
 
       const glint = new THREE.Mesh(G.glint, glintMat);
-      glint.position.set(s * -0.022, 0.045, 0.042);
+      glint.position.set(s * -0.024, 0.05, 0.075);
       eyeGroup.add(glint);
 
       this.head.add(eyeGroup);
       this.eyes.push(eyeGroup);
     }
 
+    // 眉毛（轻微八字，呆萌感）
+    for (const s of [-1, 1]) {
+      const brow = new THREE.Mesh(G.brow, browMat);
+      brow.position.set(s * 0.15, 0.175, 0.36);
+      brow.rotation.z = s * -0.18;
+      brow.rotation.y = s * 0.28;
+      this.head.add(brow);
+    }
+
     this.mouth = new THREE.Mesh(G.mouth, mouthMat);
-    this.mouth.position.set(0, -0.1, 0.348);
+    this.mouth.position.set(0, -0.1, 0.385);
     this.mouth.rotation.z = Math.PI;
     this.head.add(this.mouth);
 
     for (const s of [-1, 1]) {
       const cheek = new THREE.Mesh(G.cheek, cheekMat);
-      cheek.position.set(s * 0.215, -0.055, 0.3);
-      cheek.rotation.y = s * 0.55;
+      cheek.position.set(s * 0.24, -0.06, 0.315);
+      cheek.rotation.y = s * 0.62;
       this.head.add(cheek);
     }
 
     // ---- 手臂 ----
-    this.lArm.position.set(-0.3, 1.1, 0);
-    this.rArm.position.set(0.3, 1.1, 0);
+    this.lArm.position.set(-0.32, 1.08, 0);
+    this.rArm.position.set(0.32, 1.08, 0);
     for (const [arm, side] of [
       [this.lArm, -1],
       [this.rArm, 1],
     ] as const) {
       const limb = new THREE.Mesh(G.arm, skinMat);
-      limb.position.y = -0.22;
+      limb.position.y = -0.21;
       arm.add(limb);
 
       const sleeve = new THREE.Mesh(G.sleeve, kitMat);
@@ -296,45 +362,45 @@ export class CharacterView {
 
       const cuff = new THREE.Mesh(G.cuff, trimMat);
       cuff.rotation.x = Math.PI / 2;
-      cuff.position.y = -0.17;
+      cuff.position.y = -0.16;
       arm.add(cuff);
 
       const wrist = new THREE.Mesh(G.wrist, trimMat);
       wrist.rotation.x = Math.PI / 2;
-      wrist.position.y = -0.365;
+      wrist.position.y = -0.35;
       arm.add(wrist);
 
       const hand = new THREE.Mesh(G.hand, skinMat);
-      hand.position.set(side * 0.004, -0.43, 0);
+      hand.position.set(side * 0.004, -0.415, 0);
       arm.add(hand);
 
       this.rig.add(arm);
     }
 
     // ---- 腿 ----
-    this.lLeg.position.set(-0.135, 0.56, 0);
-    this.rLeg.position.set(0.135, 0.56, 0);
+    this.lLeg.position.set(-0.14, 0.56, 0);
+    this.rLeg.position.set(0.14, 0.56, 0);
     for (const leg of [this.lLeg, this.rLeg]) {
       const limb = new THREE.Mesh(G.leg, skinMat);
-      limb.position.y = -0.2;
+      limb.position.y = -0.19;
       leg.add(limb);
 
       const knee = new THREE.Mesh(G.knee, trimMat);
       knee.rotation.x = Math.PI / 2;
-      knee.position.y = -0.235;
+      knee.position.y = -0.225;
       leg.add(knee);
 
       const sock = new THREE.Mesh(G.sock, trimMat);
-      sock.position.y = -0.345;
+      sock.position.y = -0.33;
       leg.add(sock);
 
       const shoe = new THREE.Mesh(G.shoe, kitDark);
-      shoe.position.set(0, -0.43, 0.05);
+      shoe.position.set(0, -0.415, 0.05);
       shoe.scale.set(1.05, 0.72, 1.5);
       leg.add(shoe);
 
       const sole = new THREE.Mesh(G.sole, trimMat);
-      sole.position.set(0, -0.492, 0.06);
+      sole.position.set(0, -0.478, 0.06);
       leg.add(sole);
 
       this.rig.add(leg);
@@ -342,10 +408,11 @@ export class CharacterView {
 
     this.label = makeLabel(p.name, teamColor, p.id + 1);
     this.label.position.y = 2.55;
+    this.label.visible = !SAFE_MODE;
     this.root.add(this.label);
   }
 
-  private buildHair(idx: number, hairMat: THREE.MeshStandardMaterial, trimMat: THREE.MeshStandardMaterial): void {
+  private buildHair(idx: number, hairMat: THREE.MeshBasicMaterial, trimMat: THREE.MeshBasicMaterial): void {
     const hair = new THREE.Group();
     this.head.add(hair);
 
@@ -363,70 +430,70 @@ export class CharacterView {
 
     if (style === 0) {
       // 齐刘海蘑菇头
-      for (const x of [-0.16, 0, 0.16]) {
+      for (const x of [-0.17, 0, 0.17]) {
         const fringe = new THREE.Mesh(G.hairBlob, hairMat);
-        fringe.position.set(x, 0.21, 0.3);
-        fringe.scale.set(0.95, 0.62, 0.85);
+        fringe.position.set(x, 0.22, 0.32);
+        fringe.scale.set(1, 0.65, 0.85);
         hair.add(fringe);
       }
       for (const s of [-1, 1]) {
         const lock = new THREE.Mesh(G.hairBlob, hairMat);
-        lock.position.set(s * 0.34, -0.1, 0.03);
-        lock.scale.set(0.55, 1.15, 0.75);
+        lock.position.set(s * 0.36, -0.1, 0.03);
+        lock.scale.set(0.55, 1.2, 0.75);
         hair.add(lock);
       }
     } else if (style === 1) {
       // 侧分 + 头带
       const fringe = new THREE.Mesh(G.hairBlob, hairMat);
-      fringe.position.set(0.02, 0.22, 0.29);
-      fringe.scale.set(1.6, 0.62, 0.8);
+      fringe.position.set(0.02, 0.23, 0.31);
+      fringe.scale.set(1.7, 0.65, 0.82);
       fringe.rotation.z = -0.16;
       hair.add(fringe);
 
       const lock = new THREE.Mesh(G.hairBlob, hairMat);
-      lock.position.set(-0.33, -0.08, 0.02);
-      lock.scale.set(0.6, 1.05, 0.7);
+      lock.position.set(-0.35, -0.08, 0.02);
+      lock.scale.set(0.6, 1.1, 0.7);
       hair.add(lock);
 
       const band = new THREE.Mesh(G.headband, trimMat);
       band.rotation.x = Math.PI / 2;
-      band.position.y = 0.09;
+      band.position.y = 0.1;
       hair.add(band);
     } else if (style === 2) {
       // 马尾
       const bun = new THREE.Mesh(G.hairBun, hairMat);
-      bun.position.set(0, 0.12, -0.36);
+      bun.position.set(0, 0.13, -0.39);
       bun.scale.set(1.05, 1.05, 0.9);
       hair.add(bun);
 
       const tail = new THREE.Mesh(G.hairTail, hairMat);
-      tail.position.set(0, -0.17, -0.43);
+      tail.position.set(0, -0.17, -0.46);
       tail.rotation.x = -0.22;
       tail.scale.set(0.9, 1.2, 0.9);
       hair.add(tail);
 
       const fringe = new THREE.Mesh(G.hairBlob, hairMat);
-      fringe.position.set(0, 0.22, 0.29);
-      fringe.scale.set(1.3, 0.62, 0.85);
+      fringe.position.set(0, 0.23, 0.31);
+      fringe.scale.set(1.35, 0.65, 0.85);
       hair.add(fringe);
     } else {
       // 呆毛 + 双丸子
       for (const s of [-1, 1]) {
         const knot = new THREE.Mesh(G.hairBun, hairMat);
-        knot.position.set(s * 0.27, 0.26, -0.04);
+        knot.position.set(s * 0.29, 0.27, -0.04);
         knot.scale.setScalar(0.95);
         hair.add(knot);
       }
       for (let i = 0; i < 3; i++) {
         const spike = new THREE.Mesh(G.spike, hairMat);
-        spike.position.set((i - 1) * 0.14, 0.36, 0.08);
+        spike.position.set((i - 1) * 0.15, 0.38, 0.09);
         spike.rotation.z = (i - 1) * -0.5;
         spike.rotation.x = -0.2;
         hair.add(spike);
       }
       const fringe = new THREE.Mesh(G.hairBlob, hairMat);
-      fringe.position.set(0, 0.22, 0.29);
-      fringe.scale.set(1.25, 0.62, 0.85);
+      fringe.position.set(0, 0.23, 0.31);
+      fringe.scale.set(1.3, 0.65, 0.85);
       hair.add(fringe);
     }
   }
@@ -443,7 +510,7 @@ export class CharacterView {
       const mat = (mesh as THREE.Mesh).material as THREE.Material | THREE.Material[];
       const list = Array.isArray(mat) ? mat : [mat];
       for (const m of list) {
-        const map = (m as THREE.MeshStandardMaterial).map;
+        const map = (m as THREE.MeshBasicMaterial).map;
         if (map) map.dispose();
         m.dispose();
       }

@@ -28,6 +28,8 @@
 
 环境要求：Node.js 18+、npm、微信开发者工具。
 
+**微信基础库要求：理论最低 1.9.94（依赖 `wx.createCanvas` 的离屏行为），建议 ≥ 2.16.1（原生支持 `wx.createOffscreenCanvas`）。** PC 微信（3.9.x）小游戏 runtime 没有 `createOffscreenCanvas`，代码已做自动回退（见 `src/platform/wx-shim.ts` 的 `create2dCanvas`），无需额外配置。
+
 ```bash
 cd minigame
 npm install
