@@ -18,7 +18,7 @@ const CAM = {
 
 /** 表现层：只读取 World 状态，不写回任何模拟数据 */
 export class SceneView {
-  readonly renderer: THREE.WebGLRenderer;
+  renderer: THREE.WebGLRenderer;
   readonly scene = new THREE.Scene();
   readonly camera: THREE.PerspectiveCamera;
   readonly effects: Effects;
@@ -39,6 +39,11 @@ export class SceneView {
   private previewLine: THREE.Line;
   private previewPts = new Float32Array(70 * 3);
   private receiverMark: THREE.Mesh;
+  /** 最近一次 build 的角色阵容签名：同阵容重开一局直接复用角色视图，避免点击时重复烘焙贴图 */
+  private rosterKey = '';
+  private safeFallback = false;
+  private lostNotified = false;
+  private onContextLostCb: ((reason: string) => void) | null = null;
 
   constructor(
     canvas: CanvasLike,
@@ -46,10 +51,12 @@ export class SceneView {
     height: number,
     padHeight: number,
     dpr: number,
+    onContextLost?: (reason: string) => void,
   ) {
     this.width = width;
     this.height = height;
     this.padHeight = padHeight;
+    this.onContextLostCb = onContextLost ?? null;
 
     this.renderer = new THREE.WebGLRenderer({
       canvas: canvas as unknown as HTMLCanvasElement,
@@ -63,6 +70,7 @@ export class SceneView {
     this.renderer.toneMapping = THREE.NoToneMapping;
     this.renderer.shadowMap.enabled = false;
     this.renderer.autoClear = false;
+    this.bindContextEvents();
 
     // near/far 收紧：提升移动设备 16 位深度缓冲下的精度，避免贴身部件深度冲突
     this.camera = new THREE.PerspectiveCamera(CAM.fov, width / (height - padHeight), 0.5, 160);
@@ -107,6 +115,121 @@ export class SceneView {
     this.resize(width, height, padHeight);
   }
 
+  /**
+   * 小游戏 canvas 没有真正的 DOM 事件（wx-shim 补的 addEventListener 是空函数），
+   * 所以这里的监听在真机上通常收不到；真正的兜底是 App 里定时 isContextLost() 轮询。
+   */
+  private bindContextEvents(): void {
+    const c = this.renderer.domElement as unknown as {
+      addEventListener?: (t: string, cb: () => void) => void;
+    };
+    const onLost = (): void => {
+      this.lostNotified = true;
+      this.onContextLostCb?.('webglcontextlost');
+    };
+    const onRestored = (): void => {
+      this.lostNotified = false;
+      this.onContextLostCb?.('webglcontextrestored');
+    };
+    try {
+      if (typeof c.addEventListener === 'function') {
+        c.addEventListener('webglcontextlost', onLost);
+        c.addEventListener('webglcontextrestored', onRestored);
+      }
+    } catch {
+      // 收不到就靠轮询
+    }
+  }
+
+  /** WebGL 上下文是否已丢失（真机上事件不可靠，App 每秒轮询这个方法） */
+  isContextLost(): boolean {
+    try {
+      const gl = this.renderer.getContext() as WebGLRenderingContext & {
+        isContextLost?: () => boolean;
+      };
+      return typeof gl?.isContextLost === 'function' ? gl.isContextLost() : false;
+    } catch {
+      return false;
+    }
+  }
+
+  /** 渲染能力摘要：真机日志里最关键的一行（GL 版本 / 最大贴图尺寸 / 画布像素 / DPR） */
+  glInfo(): Record<string, string | number | boolean> {
+    const out: Record<string, string | number | boolean> = {
+      dpr: this.renderer.getPixelRatio(),
+      canvas: `${this.width}x${this.height}`,
+    };
+    try {
+      const c = this.renderer.domElement as unknown as { width: number; height: number };
+      out.buffer = `${c.width}x${c.height}`;
+    } catch {
+      // 忽略
+    }
+    try {
+      const gl = this.renderer.getContext() as WebGLRenderingContext;
+      const gl2 = (globalThis as unknown as { WebGL2RenderingContext?: unknown })
+        .WebGL2RenderingContext;
+      const isGL2 = typeof gl2 === 'function' && gl instanceof (gl2 as new () => unknown);
+      out.gl = isGL2 ? 'webgl2' : 'webgl1';
+      out.maxTex = gl.getParameter(gl.MAX_TEXTURE_SIZE) as number;
+      const dbg = gl.getExtension('WEBGL_debug_renderer_info');
+      if (dbg) {
+        out.gpu = String(gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) || '').slice(0, 40);
+      }
+      out.lost = this.isContextLost();
+    } catch {
+      out.gl = 'unknown';
+    }
+    return out;
+  }
+
+  /** 本地排查用：主动丢弃上下文，验证自愈链路（真机调试面板上也能一键触发） */
+  debugLoseContext(): void {
+    try {
+      const gl = this.renderer.getContext() as WebGLRenderingContext;
+      gl.getExtension('WEBGL_lose_context')?.loseContext();
+    } catch {
+      // 不支持就忽略
+    }
+  }
+
+  /**
+   * 上下文丢失后的重建尝试。同一张 canvas 上重建 WebGL 上下文在多数真机可行
+   * （WebGL 规范会复用同一 context 对象；恢复失败时直接返回 false，由上层提示重启）。
+   */
+  rebuildRenderer(): boolean {
+    try {
+      const canvas = this.renderer.domElement as unknown as CanvasLike;
+      const dpr = this.renderer.getPixelRatio();
+      this.renderer.dispose();
+      this.renderer = new THREE.WebGLRenderer({
+        canvas: canvas as unknown as HTMLCanvasElement,
+        antialias: true,
+        powerPreference: 'high-performance',
+        alpha: false,
+      });
+      this.renderer.setPixelRatio(dpr);
+      this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+      this.renderer.toneMapping = THREE.NoToneMapping;
+      this.renderer.shadowMap.enabled = false;
+      this.renderer.autoClear = false;
+      this.renderer.setSize(this.width, this.height, false);
+      this.bindContextEvents();
+      this.lostNotified = false;
+      return !this.isContextLost();
+    } catch {
+      return false;
+    }
+  }
+
+  /** 安全渲染降级：纯色地板 + 无光束 + 隐藏名字/号码贴图 */
+  applySafeFallback(): void {
+    if (this.safeFallback) return;
+    this.safeFallback = true;
+    this.arena.applySafeFallback();
+    for (const v of this.views.values()) v.applySafeFallback();
+  }
+
   resize(width: number, height: number, padHeight: number): void {
     this.width = width;
     this.height = height;
@@ -117,6 +240,11 @@ export class SceneView {
   }
 
   build(world: World): void {
+    const key = world.players.map((p) => `${p.id}:${p.name}:${p.team}`).join('|');
+    if (key === this.rosterKey && this.views.size === world.players.length) {
+      // 同阵容（单人重开、返回首页后再开始）：直接复用，点击当帧不再创建 8 张 canvas 贴图
+      return;
+    }
     for (const v of this.views.values()) {
       this.scene.remove(v.root);
       v.dispose();
@@ -126,6 +254,10 @@ export class SceneView {
       const v = new CharacterView(p, p.id);
       this.views.set(p.id, v);
       this.scene.add(v.root);
+    }
+    this.rosterKey = key;
+    if (this.safeFallback) {
+      for (const v of this.views.values()) v.applySafeFallback();
     }
   }
 

@@ -12,38 +12,54 @@ export class GameAudio {
 
   constructor(private readonly createContext?: () => AudioContext | null) {}
 
+  /**
+   * iOS 上 WebAudio 有大量差异（接口缺失、createGain 抛错、resume 被拒），
+   * 音频只是装饰，任何一步失败都直接降级为静音，绝不能把进场流程带崩。
+   */
   unlock(): void {
-    if (!this.ctx) {
-      const ctx = this.createContext
-        ? this.createContext()
-        : (() => {
-            const Ctor =
-              window.AudioContext ??
-              (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-            return Ctor ? new Ctor() : null;
-          })();
-      if (!ctx) return;
-      this.ctx = ctx;
+    try {
+      if (!this.ctx) {
+        const ctx = this.createContext
+          ? this.createContext()
+          : (() => {
+              const Ctor =
+                window.AudioContext ??
+                (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+              return Ctor ? new Ctor() : null;
+            })();
+        if (!ctx || typeof ctx.createGain !== 'function') return;
+        this.ctx = ctx;
 
-      this.master = ctx.createGain();
-      this.master.gain.value = this.muted ? 0 : 0.85;
-      this.master.connect(ctx.destination);
+        this.master = ctx.createGain();
+        this.master.gain.value = this.muted ? 0 : 0.85;
+        this.master.connect(ctx.destination);
 
-      this.sfx = ctx.createGain();
-      this.sfx.gain.value = 0.9;
-      this.sfx.connect(this.master);
+        this.sfx = ctx.createGain();
+        this.sfx.gain.value = 0.9;
+        this.sfx.connect(this.master);
 
-      this.music = ctx.createGain();
-      this.music.gain.value = 0.5;
-      this.music.connect(this.master);
+        this.music = ctx.createGain();
+        this.music.gain.value = 0.5;
+        this.music.connect(this.master);
 
-      const len = Math.floor(ctx.sampleRate * 0.3);
-      const buf = ctx.createBuffer(1, len, ctx.sampleRate);
-      const data = buf.getChannelData(0);
-      for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
-      this.noise = buf;
+        const len = Math.floor(ctx.sampleRate * 0.3);
+        const buf = ctx.createBuffer(1, len, ctx.sampleRate);
+        const data = buf.getChannelData(0);
+        for (let i = 0; i < len; i++) data[i] = Math.random() * 2 - 1;
+        this.noise = buf;
+      }
+      if (this.ctx.state === 'suspended') {
+        const p = this.ctx.resume();
+        if (p && typeof p.catch === 'function') p.catch(() => undefined);
+      }
+    } catch {
+      this.ctx = null;
+      this.master = null;
+      this.sfx = null;
+      this.music = null;
+      this.noise = null;
+      this.bgmRunning = false;
     }
-    if (this.ctx.state === 'suspended') void this.ctx.resume();
   }
 
   get isMuted(): boolean {
@@ -62,7 +78,11 @@ export class GameAudio {
     if (!this.ctx) return;
     if (!this.bgmRunning) {
       this.bgmRunning = true;
-      this.nextBeat = this.ctx.currentTime + 0.2;
+      try {
+        this.nextBeat = this.ctx.currentTime + 0.2;
+      } catch {
+        this.bgmRunning = false;
+      }
     }
   }
 
@@ -83,18 +103,22 @@ export class GameAudio {
     const ctx = this.ctx;
     const out = this.sfx;
     if (!ctx || !out) return;
-    const t = ctx.currentTime + (o.delay ?? 0);
-    const osc = ctx.createOscillator();
-    const g = ctx.createGain();
-    osc.type = o.type ?? 'sine';
-    osc.frequency.setValueAtTime(Math.max(20, o.freq), t);
-    if (o.to) osc.frequency.exponentialRampToValueAtTime(Math.max(20, o.to), t + o.dur);
-    g.gain.setValueAtTime(0.0001, t);
-    g.gain.exponentialRampToValueAtTime(Math.max(0.001, o.gain ?? 0.2), t + 0.012);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + o.dur);
-    osc.connect(g).connect(out);
-    osc.start(t);
-    osc.stop(t + o.dur + 0.03);
+    try {
+      const t = ctx.currentTime + (o.delay ?? 0);
+      const osc = ctx.createOscillator();
+      const g = ctx.createGain();
+      osc.type = o.type ?? 'sine';
+      osc.frequency.setValueAtTime(Math.max(20, o.freq), t);
+      if (o.to) osc.frequency.exponentialRampToValueAtTime(Math.max(20, o.to), t + o.dur);
+      g.gain.setValueAtTime(0.0001, t);
+      g.gain.exponentialRampToValueAtTime(Math.max(0.001, o.gain ?? 0.2), t + 0.012);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + o.dur);
+      osc.connect(g).connect(out);
+      osc.start(t);
+      osc.stop(t + o.dur + 0.03);
+    } catch {
+      // 个别 iOS 版本 WebAudio 节点创建会抛错，音效失败静默
+    }
   }
 
   private noiseBurst(o: {
@@ -108,19 +132,23 @@ export class GameAudio {
     const ctx = this.ctx;
     const out = this.sfx;
     if (!ctx || !out || !this.noise) return;
-    const t = ctx.currentTime + (o.delay ?? 0);
-    const src = ctx.createBufferSource();
-    src.buffer = this.noise;
-    const f = ctx.createBiquadFilter();
-    f.type = o.type ?? 'bandpass';
-    f.frequency.value = o.freq;
-    f.Q.value = o.q ?? 0.9;
-    const g = ctx.createGain();
-    g.gain.setValueAtTime(Math.max(0.001, o.gain ?? 0.2), t);
-    g.gain.exponentialRampToValueAtTime(0.0001, t + o.dur);
-    src.connect(f).connect(g).connect(out);
-    src.start(t);
-    src.stop(t + o.dur + 0.02);
+    try {
+      const t = ctx.currentTime + (o.delay ?? 0);
+      const src = ctx.createBufferSource();
+      src.buffer = this.noise;
+      const f = ctx.createBiquadFilter();
+      f.type = o.type ?? 'bandpass';
+      f.frequency.value = o.freq;
+      f.Q.value = o.q ?? 0.9;
+      const g = ctx.createGain();
+      g.gain.setValueAtTime(Math.max(0.001, o.gain ?? 0.2), t);
+      g.gain.exponentialRampToValueAtTime(0.0001, t + o.dur);
+      src.connect(f).connect(g).connect(out);
+      src.start(t);
+      src.stop(t + o.dur + 0.02);
+    } catch {
+      // 同上：音效失败不影响对局
+    }
   }
 
   // ---------------------------------------------------------------- 事件音
@@ -210,11 +238,18 @@ export class GameAudio {
     const ctx = this.ctx;
     const out = this.music;
     if (!ctx || !out || !this.bgmRunning) return;
-    const now = ctx.currentTime;
-    if (this.nextBeat < now) this.nextBeat = now + 0.05;
-    while (this.nextBeat < now + 0.35) {
-      this.scheduleBeat(this.nextBeat, this.beat++);
-      this.nextBeat += 0.46;
+    try {
+      const now = ctx.currentTime;
+      if (this.nextBeat < now) this.nextBeat = now + 0.05;
+      // 上限保护：切后台回来后 currentTime 可能大幅跳跃，避免一次性排上千个音符
+      let guard = 0;
+      while (this.nextBeat < now + 0.35 && guard++ < 8) {
+        this.scheduleBeat(this.nextBeat, this.beat++);
+        this.nextBeat += 0.46;
+      }
+      if (this.nextBeat < now + 0.35) this.nextBeat = now + 0.4;
+    } catch {
+      this.bgmRunning = false;
     }
   }
 

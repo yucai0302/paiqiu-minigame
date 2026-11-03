@@ -49,6 +49,7 @@ export class World {
   readonly localPlayerId: number;
   private readonly humanCount: number;
   private readonly roster: string[];
+  private readonly skill: Skill;
 
   phase: Phase = 'idle';
   phaseTimer = 0;
@@ -86,12 +87,28 @@ export class World {
     this.humanCount = clamp(Math.round(opts.humanCount ?? 1), 1, this.teamSize);
     this.localPlayerId = clamp(Math.round(opts.localPlayerId ?? 0), 0, this.teamSize - 1);
     this.roster = opts.names ?? [];
+    this.skill = opts.skill;
     this.rng = createRng(opts.seed ?? Date.now() % 2147483647);
     this.createPlayers(opts.skill, opts.humanName ?? '你');
     this.resetPlayers();
   }
 
   // ---------------------------------------------------------------- 生命周期
+
+  /** 联机断线兜底：把某号位在 真人/AI 之间运行时切换（仅房主权威端使用） */
+  setHumanControl(id: number, human: boolean): void {
+    const p = this.players.find((q) => q.id === id);
+    if (!p || p.isHuman === human) return;
+    p.isHuman = human;
+    p.speedScale = human ? 1 : SKILLS[this.skill].moveScale;
+    if (human) {
+      this.brains.delete(id);
+      p.charge = 0;
+      p.hitBuffer = 0;
+    } else if (!this.brains.has(id)) {
+      this.brains.set(id, new AIBrain(this.skill, this.rng));
+    }
+  }
 
   startMatch(): void {
     this.scores = [0, 0];
@@ -223,7 +240,7 @@ export class World {
           team: 0,
           slot: i === 0 ? n - 1 : i - 1,
           human,
-          name: this.roster[i] ?? (i === 0 ? humanName : HOME_AI_NAMES[(i - 1) % HOME_AI_NAMES.length]),
+          name: this.roster[i] || (i === 0 ? humanName : HOME_AI_NAMES[(i - 1) % HOME_AI_NAMES.length]),
           skill,
         }),
       );

@@ -34,6 +34,10 @@
           });
         }
 
+        var qs = location.search;
+        // ?dpr=3 模拟 iPhone 等 pixelRatio=3 的设备（垫片会按 2 封顶，与真机一致）
+        var simDpr = Number((qs.match(/[?&]dpr=(\d+(?:\.\d+)?)/) || [])[1]) || 2;
+
         var rawCanvas = /[?&]rawcanvas=1/.test(location.search);
 
         // ?rawcanvas=1 模拟 PC 微信 runtime：canvas 是原生对象，没有
@@ -69,7 +73,7 @@
             return {
               windowWidth: 390,
               windowHeight: 844,
-              pixelRatio: 2,
+              pixelRatio: simDpr,
               safeArea: { top: 0, bottom: 844 },
             };
           },
@@ -79,9 +83,21 @@
               windowHeight: 844,
               screenWidth: 390,
               screenHeight: 844,
-              pixelRatio: 2,
+              pixelRatio: simDpr,
               safeArea: { top: 0, bottom: 844 },
             };
+          },
+          // 冷启动参数：把 location.search 解析成 query 对象（?room=123456&nick=xx）
+          getLaunchOptionsSync: function () {
+            var q = {};
+            location.search.replace(/[?&]([^&=]+)=([^&]*)/g, function (_, k, v) {
+              q[k] = decodeURIComponent(v);
+            });
+            return { query: q, scene: 0 };
+          },
+          // 真机分享走 wx.shareAppMessage；开发环境只打日志
+          shareAppMessage: function (o) {
+            console.log('[shareAppMessage]', JSON.stringify(o));
           },
           onTouchStart: function (cb) {
             handlers.start.push(cb);
@@ -110,6 +126,80 @@
         // ?safefx=1 开启安全渲染模式（纯色地板、关光束、隐藏名牌/号码）
         if (/[?&]safefx=1/.test(location.search)) {
           window.__SAFEFX__ = 1;
+        }
+
+        // ?fakecloud=1 模拟真机存在 wx.cloud 接口（用于验证 CLOUD_ENV 为空时的降级）
+        if (/[?&]fakecloud=1/.test(location.search)) {
+          window.wx.cloud = { init: function () {} };
+        }
+
+        // ?nonet=1 模拟真机无 WebSocket 全局（验证缺能力/缺配置时的降级路径）
+        if (/[?&]nonet=1/.test(location.search)) {
+          delete window.WebSocket;
+        }
+
+        // ---------------------------------------------------------------- 帧调度差异模拟
+        // ?canvasraf=1 模拟微信主屏画布：rAF 只挂在 canvas 上（全局没有），
+        //              回调时间戳基于 performance.now()（相对时间），与平台 Date.now() 不同源
+        // ?rafonce=1   模拟真机 rAF 只回调一次后静默失联：不抛错、不再调度
+        //              （"首页定格、点开始无反应"的复现开关）
+        // ?rafnots=1   模拟 rAF 回调不传时间戳（部分基础库/PC runtime 行为）
+        if (/[?&](canvasraf|rafonce|rafnots)=1/.test(qs)) {
+          // 先抓住原生 rAF：垫片随后会把全局 requestAnimationFrame 换成
+          // "canvas.requestAnimationFrame" 包装，如果这里再用全局就会自我递归、一帧都不跑。
+          var nativeRaf = window.requestAnimationFrame.bind(window);
+          var rafCbs = new Map();
+          var rafNext = 1;
+          var rafFired = 0;
+          var rafNoTs = /[?&]rafnots=1/.test(qs);
+          var rafOnce = /[?&]rafonce=1/.test(qs);
+          var rafTick = function () {
+            var batch = Array.from(rafCbs.values());
+            rafCbs.clear();
+            rafFired++;
+            if (rafOnce && rafFired > 1) return;
+            batch.forEach(function (cb) {
+              if (rafNoTs) cb();
+              else cb(performance.now());
+            });
+            if (!rafOnce) nativeRaf(rafTick);
+          };
+          window.HTMLCanvasElement.prototype.requestAnimationFrame = function (cb) {
+            var id = rafNext++;
+            rafCbs.set(id, cb);
+            if (rafCbs.size === 1) nativeRaf(rafTick);
+            return id;
+          };
+          window.HTMLCanvasElement.prototype.cancelAnimationFrame = function (id) {
+            rafCbs.delete(id);
+          };
+        }
+
+        // ?noraf=1 模拟全局 requestAnimationFrame 不存在（只有 canvas 上的）
+        if (/[?&]noraf=1/.test(qs)) {
+          window.requestAnimationFrame = undefined;
+          window.cancelAnimationFrame = undefined;
+        }
+
+        // ?audiofail=1 模拟 ios 上 createWebAudioContext 抛异常
+        if (/[?&]audiofail=1/.test(qs)) {
+          window.wx.createWebAudioContext = function () {
+            throw new Error('sim: createWebAudioContext unavailable');
+          };
+        }
+
+        // ?nocloud=1 模拟真机 wx.cloud 缺失（但代码里配了 CLOUD_ENV）
+        if (/[?&]nocloud=1/.test(qs)) {
+          delete window.wx.cloud;
+        }
+
+        // ?nocanvas2d=1 模拟离屏 canvas 拿不到 2d 上下文（贴图烘焙失败路径）
+        if (/[?&]nocanvas2d=1/.test(qs)) {
+          var origGetContext = window.HTMLCanvasElement.prototype.getContext;
+          window.HTMLCanvasElement.prototype.getContext = function (type) {
+            if (type === '2d') return null;
+            return origGetContext.call(this, type);
+          };
         }
 
         window.__touch = function (type, id, x, y) {

@@ -64,11 +64,13 @@ export function createWebPlatform(): Platform {
     mouseId = -1;
   });
 
+  const dprQuery = Number(new URLSearchParams(window.location.search).get('dpr'));
   return {
     canvas: canvas as unknown as CanvasLike,
     width,
     height,
-    dpr: Math.min(window.devicePixelRatio || 1, 2),
+    // ?dpr=3 仅用于本地压测高 DPR；真实设备上仍按 2 封顶（iPhone 常见 3）
+    dpr: dprQuery > 0 ? dprQuery : Math.min(window.devicePixelRatio || 1, 2),
     safeTop: 0,
     safeBottom: 0,
     createCanvas(w: number, h: number): CanvasLike {
@@ -98,6 +100,28 @@ export function createWebPlatform(): Platform {
     },
     vibrateShort(): void {
       navigator.vibrate?.(10);
+    },
+    getLaunchQuery(): Record<string, string> {
+      const q: Record<string, string> = {};
+      new URLSearchParams(window.location.search).forEach((v, k) => {
+        q[k] = v;
+      });
+      return q;
+    },
+    getNickName(cb): void {
+      cb(this.getLaunchQuery().nick || '玩家');
+    },
+    shareAppMessage(title: string, query: string): void {
+      // 浏览器开发环境：复制带 room 参数的链接模拟"点卡片进房"
+      const url = `${window.location.origin}${window.location.pathname}?${query}`;
+      navigator.clipboard?.writeText(url).catch(() => undefined);
+      console.log('[share-sim]', title, url);
+    },
+    showModal(title: string, content: string): void {
+      window.alert(`${title}\n${content}`);
+    },
+    restartApp(): void {
+      window.location.reload();
     },
   };
 }

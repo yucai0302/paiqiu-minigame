@@ -5,6 +5,7 @@
   "compileType": "game",
   "libVersion": "3.9.0",
   "miniprogramRoot": "",
+  "cloudfunctionRoot": "cloudfunctions/",
   "setting": {
     "urlCheck": false,
     "es6": false,
@@ -40,6 +41,14 @@
       },
       {
         "value": "web",
+        "type": "folder"
+      },
+      {
+        "value": "tools",
+        "type": "folder"
+      },
+      {
+        "value": "docs",
         "type": "folder"
       },
       {

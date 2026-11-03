@@ -23,9 +23,21 @@ export interface ScreenHandlers {
   onAgain: () => void;
   onHome: () => void;
   onResume: () => void;
+  /** 首页「邀请好友」入口 */
+  onInvite: () => void;
+  /** 房间页「邀请微信好友」分享按钮 */
+  onShare: () => void;
+  /** 房主「立即开始 · AI 补位」 */
+  onHostStart: () => void;
+  /** 退出房间 / 断网面板返回大厅 */
+  onRoomExit: () => void;
+  /** 断网面板「重新连接」 */
+  onReconnect: () => void;
+  /** 进场/渲染出错面板「重试」 */
+  onFatalRetry: () => void;
 }
 
-type Screen = 'none' | 'start' | 'result' | 'pause';
+type Screen = 'none' | 'start' | 'result' | 'pause' | 'room' | 'netdown' | 'fatal';
 
 /** 队色：与角色球衣一致 */
 const TEAM_GREEN = '#22c55e';
@@ -47,8 +59,8 @@ function layout(W: number, H: number, panelTop: number): Record<string, number> 
     cardH: 92,
     descY: titleY + 350,
     ctaY: titleY + 410, // CTA 中心
-    hintY: titleY + 462,
-    tipsY: titleY + 502, // 图标提示条中心
+    pillY: titleY + 490, // 邀请好友胶囊中心
+    tipsY: titleY + 530, // 图标提示条中心
     ruleY: H - 66,
     verY: H - 28,
     cx: W / 2,
@@ -328,7 +340,7 @@ export class Screens {
   private root = new THREE.Group();
   private bg: THREE.Sprite;
   private hits: HitRect[] = [];
-  private state: Screen = 'none';
+  state: Screen = 'none';
   private skill: Skill = 'normal';
   private readonly panelTop: number;
 
@@ -343,6 +355,18 @@ export class Screens {
   private diffTex: THREE.Texture[][] = []; // [i][0=normal,1=selected]
   private diffDescSpr: THREE.Sprite | null = null;
   private t = 0;
+
+  // 房间 / 断网 / 提示
+  private toastSpr: THREE.Sprite | null = null;
+  private toastT = 0;
+  private resultMode: 'local' | 'host' | 'guest' = 'local';
+  private roomPid: 0 | 1 = 0;
+  private roomId = '';
+  private roomPlayers: Array<{ pid: number; name: string }> = [];
+  private netDownMsg = '';
+  private netCanReconnect = true;
+  private fatalTitle = '';
+  private fatalMsg = '';
 
   constructor(
     private readonly ui: UiLayer,
@@ -391,11 +415,16 @@ export class Screens {
     this.ctaPressed = false;
   }
 
-  /** 每帧驱动：标题呼吸 / CTA 悬浮 / 难度卡片轻弹（安全模式下全部静止） */
+  /** 每帧驱动：Toast 淡出；标题呼吸 / CTA 悬浮 / 难度卡片轻弹（安全模式下全部静止） */
   update(dt: number): void {
-    if (this.state !== 'start') return;
     this.t += dt;
-    if (SAFE_MODE) return;
+    if (this.toastT > 0 && this.toastSpr) {
+      this.toastT -= dt;
+      const mat = this.toastSpr.material as THREE.SpriteMaterial;
+      mat.opacity = Math.min(1, Math.max(0, this.toastT / 0.45));
+      if (this.toastT <= 0) this.toastSpr.visible = false;
+    }
+    if (this.state !== 'start' || SAFE_MODE) return;
     const t = this.t;
     if (this.titleSpr) {
       const s = 1 + Math.sin(t * 2) * 0.014;
@@ -453,6 +482,34 @@ export class Screens {
       this.skill = id.slice(5) as Skill;
       this.refreshDiff();
       this.drawStatic(); // 更新选中难度的说明行
+      return;
+    }
+    if (id === 'invite') {
+      this.handlers.onInvite();
+      return;
+    }
+    if (id === 'share') {
+      this.handlers.onShare();
+      return;
+    }
+    if (id === 'hostStart') {
+      this.handlers.onHostStart();
+      return;
+    }
+    if (id === 'roomCancel' || id === 'netHome') {
+      this.handlers.onRoomExit();
+      return;
+    }
+    if (id === 'reconn') {
+      this.handlers.onReconnect();
+      return;
+    }
+    if (id === 'fatalRetry') {
+      this.handlers.onFatalRetry();
+      return;
+    }
+    if (id === 'fatalHome') {
+      this.handlers.onRoomExit();
       return;
     }
     const isPrimary = id === 'start' || id === 'again' || id === 'resume';
@@ -534,6 +591,7 @@ export class Screens {
     this.ctaSpr = makeSprite(this.root, ctaN.tex, ctaN.w, ctaN.h, ly.cx, ly.ctaY, this.H, 62);
     this.root.add(this.ctaSpr);
     this.hits.push({ id: 'start', x: ly.cx - 140, y: ly.ctaY - 46, w: 280, h: 92 });
+    this.hits.push({ id: 'invite', x: ly.cx - 113, y: ly.pillY - 23, w: 226, h: 46 });
 
     this.drawStatic();
   }
@@ -581,11 +639,38 @@ export class Screens {
     ctx.fillStyle = '#b9cbdf';
     ctx.fillText(d.desc, ly.cx, ly.descY);
 
-    // CTA 引导语
-    ctx.font = `600 12.5px ${FONT}`;
-    ctx.strokeText('点击开始 · 你是绿队 01', ly.cx, ly.hintY);
-    ctx.fillStyle = 'rgba(214,232,246,0.85)';
-    ctx.fillText('点击开始 · 你是绿队 01', ly.cx, ly.hintY);
+    // 邀请好友入口：珊瑚描边胶囊 + 双人小图标，与单人 CTA 拉开层级
+    const pw = 226;
+    const phh = 46;
+    const px = ly.cx - pw / 2;
+    const py = ly.pillY - phh / 2;
+    roundedRect(ctx, px, py, pw, phh, phh / 2);
+    ctx.fillStyle = 'rgba(255,93,115,0.20)';
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = 'rgba(255,130,150,0.8)';
+    ctx.stroke();
+    for (const [ox, alpha] of [
+      [-7, 1],
+      [8, 0.55],
+    ] as const) {
+      const ax = px + 38 + ox;
+      ctx.globalAlpha = alpha;
+      ctx.fillStyle = '#ffd6de';
+      ctx.beginPath();
+      ctx.arc(ax, py + 17, 5.4, 0, Math.PI * 2);
+      ctx.fill();
+      roundedRect(ctx, ax - 7.5, py + 24, 15, 11, 5.5);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+    ctx.font = `800 15.5px ${FONT}`;
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = 'rgba(5,12,22,0.75)';
+    ctx.strokeText('邀请好友 · 2人组队', px + pw / 2 + 14, ly.pillY);
+    ctx.fillStyle = '#ffe6ec';
+    ctx.fillText('邀请好友 · 2人组队', px + pw / 2 + 14, ly.pillY);
 
     // 操作提示条：图标 + 短标签
     const tips: Array<{ label: string; draw: (g: CanvasRenderingContext2D, x: number, y: number) => void }> = [
@@ -650,6 +735,374 @@ export class Screens {
     this.ctaSpr.scale.set(280 * s, 92 * s, 1);
   }
 
+  // ---------------------------------------------------------------- 房间 / 断网 / 提示
+
+  setResultMode(m: 'local' | 'host' | 'guest'): void {
+    this.resultMode = m;
+  }
+
+  /** 顶部小 toast（仅覆盖层可见时展示） */
+  toast(text: string): void {
+    const { canvas, ctx } = createUiCanvas(360, 52, 2);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.lineJoin = 'round';
+    let fontSize = 14.5;
+    ctx.font = `700 ${fontSize}px ${FONT}`;
+    if (ctx.measureText(text).width > 300) {
+      // 超长文案自动缩字号，避免提示被截断
+      fontSize = 12;
+      ctx.font = `700 ${fontSize}px ${FONT}`;
+    }
+    const bw = Math.min(344, ctx.measureText(text).width + 44);
+    roundedRect(ctx, 180 - bw / 2, 8, bw, 36, 18);
+    ctx.fillStyle = 'rgba(9,16,28,0.92)';
+    ctx.fill();
+    ctx.lineWidth = 1.5;
+    ctx.strokeStyle = 'rgba(140,175,220,0.4)';
+    ctx.stroke();
+    ctx.lineWidth = 3;
+    ctx.strokeStyle = 'rgba(5,12,22,0.8)';
+    ctx.strokeText(text, 180, 27);
+    ctx.fillStyle = '#e6eefb';
+    ctx.fillText(text, 180, 27);
+    const tex = makeTexture(canvas);
+    if (!this.toastSpr) {
+      this.toastSpr = uiSprite(tex, 360, 52, this.W / 2, this.H - 262, 70);
+      this.root.add(this.toastSpr);
+    } else {
+      setSpriteTexture(this.toastSpr, tex);
+    }
+    (this.toastSpr.material as THREE.SpriteMaterial).opacity = 1;
+    this.toastSpr.visible = true;
+    this.toastT = 2.4;
+  }
+
+  showRoom(pid: 0 | 1, roomId: string, players: Array<{ pid: number; name: string }>): void {
+    this.state = 'room';
+    this.root.visible = true;
+    this.roomPid = pid;
+    this.roomId = roomId;
+    this.roomPlayers = players;
+    this.clearFx();
+    this.drawRoom();
+  }
+
+  updateRoom(players: Array<{ pid: number; name: string }>): void {
+    if (this.state !== 'room') return;
+    this.roomPlayers = players;
+    this.drawRoom();
+  }
+
+  showNetDown(msg: string, canReconnect: boolean): void {
+    this.state = 'netdown';
+    this.root.visible = true;
+    this.netDownMsg = msg;
+    this.netCanReconnect = canReconnect;
+    this.clearFx();
+    this.drawNetDown();
+  }
+
+  /** 进场失败 / 渲染中断：可读错误 + 重试 / 返回首页，绝不静默停住 */
+  showFatal(title: string, msg: string): void {
+    this.state = 'fatal';
+    this.root.visible = true;
+    this.fatalTitle = title;
+    this.fatalMsg = msg;
+    this.clearFx();
+    this.drawFatal();
+  }
+
+  private drawFatal(): void {
+    const { canvas, ctx } = this.overlay();
+    ctx.fillStyle = 'rgba(4,9,16,0.34)';
+    ctx.fillRect(0, 0, this.W, this.H);
+    const cx = this.W / 2;
+    const pw = 310;
+    const ph = 300;
+    const x = (this.W - pw) / 2;
+    const y = Math.round((this.H - ph) / 2);
+    this.glassPanel(ctx, x, y, pw, ph);
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = `900 22px ${FONT}`;
+    ctx.fillStyle = '#ff8a9a';
+    ctx.fillText(this.fatalTitle.slice(0, 16), cx, y + 46);
+
+    const lines = this.wrapFatal(this.fatalMsg);
+    ctx.font = `600 12.5px ${FONT}`;
+    ctx.fillStyle = '#b9cbdf';
+    lines.slice(0, 6).forEach((ln, i) => ctx.fillText(ln, cx, y + 82 + i * 20));
+
+    this.candyButton(
+      ctx,
+      'fatalRetry',
+      cx,
+      y + 210,
+      200,
+      46,
+      '重试',
+      'rgba(52,225,135,0.75)',
+      'rgba(52,225,135,0.14)',
+      '#d5ffe8',
+      16,
+    );
+    this.candyButton(
+      ctx,
+      'fatalHome',
+      cx,
+      y + 262,
+      180,
+      34,
+      '返回首页',
+      'rgba(150,175,210,0.35)',
+      'rgba(0,0,0,0)',
+      '#c6d6ea',
+      13,
+    );
+    setSpriteTexture(this.bg, makeTexture(canvas));
+    this.bg.scale.set(this.W, this.H, 1);
+  }
+
+  private wrapFatal(msg: string): string[] {
+    const out: string[] = [];
+    for (const raw of (msg || '未知错误').split('\n')) {
+      let line = '';
+      for (const ch of raw) {
+        line += ch;
+        if (line.length >= 24) {
+          out.push(line);
+          line = '';
+        }
+      }
+      if (line) out.push(line);
+    }
+    return out;
+  }
+
+  /** 糖果描边按钮（房间/断网面板通用） */
+  private candyButton(
+    ctx: CanvasRenderingContext2D,
+    id: string,
+    cx: number,
+    cy: number,
+    w: number,
+    h: number,
+    label: string,
+    stroke: string,
+    fill: string,
+    text: string,
+    fontSize = 15,
+  ): void {
+    roundedRect(ctx, cx - w / 2, cy - h / 2, w, h, h / 2);
+    ctx.fillStyle = fill;
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = stroke;
+    ctx.stroke();
+    ctx.font = `800 ${fontSize}px ${FONT}`;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillStyle = text;
+    ctx.fillText(label, cx, cy + 0.5);
+    this.hits.push({ id, x: cx - w / 2, y: cy - h / 2, w, h });
+  }
+
+  private drawRoom(): void {
+    const { canvas, ctx } = this.overlay();
+    const cx = this.W / 2;
+    const pw = 322;
+    const ph = 420;
+    const x = (this.W - pw) / 2;
+    const y = Math.round((this.H - ph) / 2 - 16);
+    this.glassPanel(ctx, x, y, pw, ph);
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = `900 24px ${FONT}`;
+    ctx.fillStyle = '#e8f0ff';
+    ctx.fillText('好友组队房', cx, y + 46);
+
+    ctx.font = `700 11.5px ${FONT}`;
+    ctx.fillStyle = '#8ca1b8';
+    ctx.fillText('房间号 · 发给好友即可进房', cx, y + 78);
+
+    ctx.font = `900 30px ${FONT}`;
+    ctx.lineJoin = 'round';
+    ctx.lineWidth = 6;
+    ctx.strokeStyle = 'rgba(9,26,44,0.7)';
+    ctx.strokeText(this.roomId, cx, y + 110);
+    ctx.fillStyle = '#ffd75e';
+    ctx.fillText(this.roomId, cx, y + 110);
+
+    // 阵容位（房主/好友），空位虚线等待
+    for (let i = 0; i < 2; i++) {
+      const ry = y + 148 + i * 58;
+      const rx = x + 24;
+      const rw = pw - 48;
+      const p = this.roomPlayers.find((q) => q.pid === i);
+      if (p) {
+        roundedRect(ctx, rx, ry, rw, 46, 14);
+        ctx.fillStyle = i === 0 ? 'rgba(34,197,94,0.14)' : 'rgba(255,93,115,0.12)';
+        ctx.fill();
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = i === 0 ? 'rgba(110,231,160,0.55)' : 'rgba(255,150,170,0.45)';
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(rx + 30, ry + 23, 14, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255,255,255,0.16)';
+        ctx.fill();
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = i === 0 ? TEAM_GREEN : '#ff5d73';
+        ctx.stroke();
+        ctx.font = `800 13px ${FONT}`;
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(p.name.slice(0, 1), rx + 30, ry + 24);
+        ctx.textAlign = 'left';
+        ctx.font = `800 15px ${FONT}`;
+        ctx.fillStyle = '#e6eefb';
+        ctx.fillText(p.name.slice(0, 8), rx + 52, ry + 19);
+        ctx.font = `600 10.5px ${FONT}`;
+        ctx.fillStyle = i === 0 ? '#7ce8a8' : '#ffb3c2';
+        ctx.fillText(i === 0 ? '房主' : '已就绪', rx + 52, ry + 35);
+        ctx.textAlign = 'center';
+      } else {
+        roundedRect(ctx, rx, ry, rw, 46, 14);
+        ctx.fillStyle = 'rgba(12,22,36,0.4)';
+        ctx.fill();
+        ctx.setLineDash([6, 5]);
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = 'rgba(130,150,180,0.4)';
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.font = `600 13px ${FONT}`;
+        ctx.fillStyle = '#75879d';
+        ctx.fillText('等待好友加入…', cx, ry + 23);
+      }
+    }
+
+    const isHost = this.roomPid === 0;
+    if (isHost) {
+      this.candyButton(
+        ctx,
+        'share',
+        cx,
+        y + 300,
+        216,
+        46,
+        '邀请微信好友',
+        'rgba(52,225,135,0.75)',
+        'rgba(52,225,135,0.14)',
+        '#d5ffe8',
+        16,
+      );
+      if (this.roomPlayers.length < 2) {
+        this.candyButton(
+          ctx,
+          'hostStart',
+          cx,
+          y + 352,
+          190,
+          40,
+          '立即开始 · AI 补位',
+          'rgba(160,190,230,0.45)',
+          'rgba(150,180,215,0.08)',
+          '#c6d6ea',
+          13,
+        );
+      } else {
+        ctx.font = `600 12.5px ${FONT}`;
+        ctx.fillStyle = '#9db2c9';
+        ctx.fillText('已满员 · 即将开局', cx, y + 352);
+      }
+    } else {
+      ctx.font = `700 14px ${FONT}`;
+      ctx.fillStyle = '#cfe0f4';
+      ctx.fillText('等待房主开始…', cx, y + 300);
+    }
+    this.candyButton(
+      ctx,
+      'roomCancel',
+      cx,
+      y + 392,
+      120,
+      32,
+      '退出房间',
+      'rgba(150,175,210,0.35)',
+      'rgba(0,0,0,0)',
+      '#93a7bd',
+      12.5,
+    );
+
+    setSpriteTexture(this.bg, makeTexture(canvas));
+    this.bg.scale.set(this.W, this.H, 1);
+  }
+
+  private drawNetDown(): void {
+    const { canvas, ctx } = this.overlay();
+    ctx.fillStyle = 'rgba(4,9,16,0.28)';
+    ctx.fillRect(0, 0, this.W, this.H);
+    const cx = this.W / 2;
+    const pw = 300;
+    const ph = 250;
+    const x = (this.W - pw) / 2;
+    const y = Math.round((this.H - ph) / 2);
+    this.glassPanel(ctx, x, y, pw, ph);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.font = `900 24px ${FONT}`;
+    ctx.fillStyle = '#ff8a9a';
+    ctx.fillText('网络断开', cx, y + 54);
+    ctx.font = `600 13.5px ${FONT}`;
+    ctx.fillStyle = '#b9cbdf';
+    this.netDownMsg.split('\n').forEach((ln, i) => ctx.fillText(ln, cx, y + 94 + i * 22));
+    if (this.netCanReconnect) {
+      this.candyButton(
+        ctx,
+        'reconn',
+        cx,
+        y + 158,
+        200,
+        46,
+        '重新连接',
+        'rgba(52,225,135,0.75)',
+        'rgba(52,225,135,0.14)',
+        '#d5ffe8',
+        16,
+      );
+      this.candyButton(
+        ctx,
+        'netHome',
+        cx,
+        y + 212,
+        180,
+        36,
+        '返回大厅',
+        'rgba(150,175,210,0.35)',
+        'rgba(0,0,0,0)',
+        '#c6d6ea',
+        13,
+      );
+    } else {
+      this.candyButton(
+        ctx,
+        'netHome',
+        cx,
+        y + 176,
+        200,
+        46,
+        '返回大厅',
+        'rgba(150,175,210,0.45)',
+        'rgba(0,0,0,0)',
+        '#c6d6ea',
+        15,
+      );
+    }
+    setSpriteTexture(this.bg, makeTexture(canvas));
+    this.bg.scale.set(this.W, this.H, 1);
+  }
+
   // ---------------------------------------------------------------- 结算 / 暂停（深色玻璃面板）
 
   private overlay(): { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D } {
@@ -675,36 +1128,72 @@ export class Screens {
   private drawResult(world: World, winner: TeamId, mvp: string): void {
     const { canvas, ctx } = this.overlay();
     const cx = this.W / 2;
-    const y = Math.round((this.H - 420) / 2);
-    this.glassPanel(ctx, 34, y, 322, 420);
+    const y = Math.round((this.H - 470) / 2);
+    this.glassPanel(ctx, 34, y, 322, 470);
 
     const win = winner === world.humanTeam;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillStyle = win ? '#3ce78c' : '#ff6b8a';
-    ctx.font = `900 40px ${FONT}`;
-    ctx.fillText(win ? '胜利！' : '惜败', cx, y + 74);
+    ctx.font = `900 38px ${FONT}`;
+    ctx.fillText(win ? '胜利！' : '惜败', cx, y + 66);
     ctx.fillStyle = '#9db2c9';
     ctx.font = `600 13px ${FONT}`;
-    ctx.fillText(win ? '配合默契，再来一局？' : '差一点，调整节奏再战', cx, y + 116);
+    ctx.fillText(win ? '配合默契，再来一局？' : '差一点，调整节奏再战', cx, y + 106);
 
     ctx.fillStyle = '#ffffff';
-    ctx.font = `900 54px ${FONT}`;
-    ctx.fillText(`${world.setsWon[0]} : ${world.setsWon[1]}`, cx, y + 196);
+    ctx.font = `900 52px ${FONT}`;
+    ctx.fillText(`${world.setsWon[0]} : ${world.setsWon[1]}`, cx, y + 176);
 
     ctx.fillStyle = '#8ca1b8';
-    ctx.font = `600 14px ${FONT}`;
-    ctx.fillText(mvp ? `MVP · ${mvp}` : '', cx, y + 248);
+    ctx.font = `600 13.5px ${FONT}`;
+    ctx.fillText(mvp ? `MVP · ${mvp}` : '', cx, y + 222);
 
-    const again = ctaTexture('再来一局', false);
-    const spr = makeSprite(this.root, again.tex, again.w, again.h, cx, y + 306, this.H, 62);
+    // 双方阵容：头像位 + 名字（联机显示好友昵称，AI 用默认名）
+    const teams: Array<[TeamId, string, string]> = [
+      [0, '绿队', TEAM_GREEN],
+      [1, '红队', TEAM_RED],
+    ];
+    for (const [team, label, color] of teams) {
+      const ry = y + 254 + (team === 0 ? 0 : 34);
+      roundedRect(ctx, 58, ry, 52, 22, 11);
+      ctx.fillStyle = color;
+      ctx.fill();
+      ctx.font = `900 11px ${FONT}`;
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(label, 84, ry + 12);
+      let ax = 124;
+      for (const p of world.players.filter((q) => q.team === team)) {
+        ctx.beginPath();
+        ctx.arc(ax, ry + 11, 11, 0, Math.PI * 2);
+        ctx.fillStyle = 'rgba(255,255,255,0.14)';
+        ctx.fill();
+        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = color;
+        ctx.stroke();
+        ctx.font = `800 11px ${FONT}`;
+        ctx.fillStyle = '#ffffff';
+        ctx.fillText(p.name.slice(0, 1), ax, ry + 12);
+        ctx.textAlign = 'left';
+        ctx.font = `700 13px ${FONT}`;
+        ctx.fillStyle = '#dfe9f5';
+        const name = p.name.length > 6 ? `${p.name.slice(0, 6)}…` : p.name;
+        ctx.fillText(name, ax + 17, ry + 12);
+        ax += 17 + ctx.measureText(name).width + 16;
+        ctx.textAlign = 'center';
+      }
+    }
+
+    const againLabel = this.resultMode === 'guest' ? '申请再战' : '再来一局';
+    const again = ctaTexture(againLabel, false);
+    const spr = makeSprite(this.root, again.tex, again.w, again.h, cx, y + 352, this.H, 62);
     this.root.add(spr);
     this.ctaSpr = spr;
     this.ctaTexNormal = again.tex;
-    this.ctaTexPressed = ctaTexture('再来一局', true).tex;
-    this.hits.push({ id: 'again', x: cx - 140, y: y + 260, w: 280, h: 92 });
+    this.ctaTexPressed = ctaTexture(againLabel, true).tex;
+    this.hits.push({ id: 'again', x: cx - 140, y: y + 306, w: 280, h: 92 });
 
-    this.ghostButton(ctx, 'home', cx - 110, y + 356, 220, 46, '返回大厅');
+    this.ghostButton(ctx, 'home', cx - 110, y + 414, 220, 44, '返回大厅');
     setSpriteTexture(this.bg, makeTexture(canvas));
     this.bg.scale.set(this.W, this.H, 1);
   }

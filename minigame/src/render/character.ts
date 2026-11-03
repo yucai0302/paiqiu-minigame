@@ -168,6 +168,10 @@ export class CharacterView {
   private blinkTimer: number;
   private blinkPeriod: number;
   private headBaseY = 1.46;
+  /** 本角色独有的贴图（标签 / 号码），重建时只释放这些，共享贴图（影子）不能动 */
+  private readonly ownTextures: THREE.Texture[] = [];
+  /** 号码牌（安全模式下隐藏） */
+  private readonly numberMeshes: THREE.Mesh[] = [];
 
   constructor(p: Player, idx: number) {
     const skin = SKINS[idx % SKINS.length];
@@ -248,6 +252,7 @@ export class CharacterView {
     // 号码牌：背后大牌 + 胸前小牌，白底队色描边，正反都能认出队伍
     if (!SAFE_MODE) {
       const numTex = numberTexture(p.id + 1, kit);
+      this.ownTextures.push(numTex);
       const backMat = new THREE.MeshBasicMaterial({
         map: numTex,
         transparent: true,
@@ -258,6 +263,7 @@ export class CharacterView {
       backNum.position.set(0, 0.84, -0.328);
       backNum.rotation.y = Math.PI;
       this.rig.add(backNum);
+      this.numberMeshes.push(backNum);
 
       const badgeMat = new THREE.MeshBasicMaterial({
         map: numTex,
@@ -268,6 +274,7 @@ export class CharacterView {
       const badge = new THREE.Mesh(G.badge, badgeMat);
       badge.position.set(0.14, 0.68, 0.295);
       this.rig.add(badge);
+      this.numberMeshes.push(badge);
     }
 
     // ---- 短裤 ----
@@ -410,6 +417,8 @@ export class CharacterView {
     this.label.position.y = 2.55;
     this.label.visible = !SAFE_MODE;
     this.root.add(this.label);
+    const labelMap = (this.label.material as THREE.SpriteMaterial).map;
+    if (labelMap) this.ownTextures.push(labelMap);
   }
 
   private buildHair(idx: number, hairMat: THREE.MeshBasicMaterial, trimMat: THREE.MeshBasicMaterial): void {
@@ -502,6 +511,12 @@ export class CharacterView {
     this.cheerTimer = 1.6;
   }
 
+  /** 安全渲染降级：去掉名字牌与号码牌（贴图最多的两处） */
+  applySafeFallback(): void {
+    this.label.visible = false;
+    for (const m of this.numberMeshes) m.visible = false;
+  }
+
   /** 重开一局时释放本角色的材质与贴图（几何体为全局共享，不释放） */
   dispose(): void {
     this.root.traverse((obj) => {
@@ -509,12 +524,11 @@ export class CharacterView {
       if (!mesh.isMesh && !(obj as THREE.Sprite).isSprite) return;
       const mat = (mesh as THREE.Mesh).material as THREE.Material | THREE.Material[];
       const list = Array.isArray(mat) ? mat : [mat];
-      for (const m of list) {
-        const map = (m as THREE.MeshBasicMaterial).map;
-        if (map) map.dispose();
-        m.dispose();
-      }
+      for (const m of list) m.dispose();
     });
+    // 影子的贴图是全局共享的（SHADOW_TEX），不能跟着角色一起释放
+    for (const t of this.ownTextures) t.dispose();
+    this.ownTextures.length = 0;
     this.shadowMat.dispose();
     this.ringMat.dispose();
   }

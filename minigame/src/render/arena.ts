@@ -273,6 +273,9 @@ function standsTexture(): THREE.Texture {
 /** 静态场景：地板、球网、LED 广告板、看台、顶部灯光 */
 export class Arena {
   readonly group = new THREE.Group();
+  private floorMesh: THREE.Mesh | null = null;
+  private readonly beams: THREE.Mesh[] = [];
+  private safe = false;
 
   constructor() {
     this.group.add(this.buildFloor());
@@ -280,6 +283,22 @@ export class Arena {
     this.group.add(this.buildBoards());
     this.group.add(this.buildStands());
     this.group.add(this.buildLights());
+  }
+
+  /** 运行时降级：纯色地板 + 关光束（不动几何体，避免重建整个场馆） */
+  applySafeFallback(): void {
+    if (this.safe) return;
+    this.safe = true;
+    if (this.floorMesh) {
+      const mat = this.floorMesh.material as THREE.MeshBasicMaterial;
+      if (mat.map) {
+        mat.map.dispose();
+        mat.map = null;
+      }
+      mat.color.setHex(0x3a76d8);
+      mat.needsUpdate = true;
+    }
+    for (const b of this.beams) b.visible = false;
   }
 
   private buildFloor(): THREE.Group {
@@ -303,6 +322,7 @@ export class Arena {
     );
     floor.rotation.x = -Math.PI / 2;
     floor.position.y = 0.002;
+    this.floorMesh = floor;
     g.add(floor);
 
     return g;
@@ -443,6 +463,7 @@ export class Arena {
         const beam = new THREE.Mesh(new THREE.ConeGeometry(2.6, 10.4, 20, 1, true), beamMat);
         beam.position.set(x, 5.2, z);
         g.add(beam);
+        this.beams.push(beam);
       }
     }
     return g;
