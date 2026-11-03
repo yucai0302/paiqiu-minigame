@@ -1,0 +1,36 @@
+[
+  {
+    "combo": "base",
+    "bundle": "fixed",
+    "booted": true,
+    "loopAlive": true,
+    "animT": "1.577 -> 2.007",
+    "frames": "22 -> 29",
+    "driver": false,
+    "afterState": "playing",
+    "afterScreen": "none",
+    "phase": "kickoff",
+    "degraded": false,
+    "fatal": false,
+    "errors": [
+      "console: Failed to load resource: the server responded with a status of 404 (Not Found)"
+    ],
+    "shot": "start-base-fixed.png"
+  },
+  {
+    "combo": "dpr3",
+    "bundle": "fixed",
+    "booted": true,
+    "loopAlive": true,
+    "animT": "1.53 -> 2.025",
+    "frames": "19 -> 26",
+    "driver": false,
+    "afterState": "playing",
+    "afterScreen": "none",
+    "phase": "kickoff",
+    "degraded": false,
+    "fatal": false,
+    "errors": [],
+    "shot": "start-dpr3-fixed.png"
+  }
+]
