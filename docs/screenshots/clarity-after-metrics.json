@@ -1,0 +1,110 @@
+{
+  "cssSize": {
+    "w": 390,
+    "h": 844
+  },
+  "padH": 146,
+  "y0": 698,
+  "safeBottom": 0,
+  "dpr": 3,
+  "buffer": {
+    "w": 1170,
+    "h": 2532
+  },
+  "bufferPx": 2962440,
+  "gl": {
+    "dpr": 3,
+    "canvas": "390x844",
+    "buffer": "1170x2532",
+    "gl": "webgl2",
+    "maxTex": 8192,
+    "gpu": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader",
+    "lost": false
+  },
+  "uiLayerTex": {
+    "w": 1170,
+    "h": 2532
+  },
+  "floorTex": {
+    "w": 1056,
+    "h": 1656
+  },
+  "labelTex": {
+    "w": 320,
+    "h": 140
+  },
+  "charTexs": [
+    "128x128",
+    "128x128",
+    "128x128",
+    "320x140"
+  ],
+  "texCount": 41,
+  "texBytes": 32613680,
+  "rendererTextures": 37,
+  "rendererGeometries": 74,
+  "buttons": [
+    {
+      "id": "hit",
+      "x": 338,
+      "y": 801,
+      "r": 37,
+      "hitR": 43,
+      "spriteSize": 98,
+      "tex": {
+        "w": 294,
+        "h": 294
+      }
+    },
+    {
+      "id": "jump",
+      "x": 296,
+      "y": 735,
+      "r": 29,
+      "hitR": 33,
+      "spriteSize": 82,
+      "tex": {
+        "w": 246,
+        "h": 246
+      }
+    },
+    {
+      "id": "block",
+      "x": 250,
+      "y": 803,
+      "r": 29,
+      "hitR": 33,
+      "spriteSize": 82,
+      "tex": {
+        "w": 246,
+        "h": 246
+      }
+    },
+    {
+      "id": "sprint",
+      "x": 230,
+      "y": 737,
+      "r": 26,
+      "hitR": 30,
+      "spriteSize": 76,
+      "tex": {
+        "w": 228,
+        "h": 228
+      }
+    }
+  ],
+  "joy": {
+    "x": 76,
+    "y": 776.48,
+    "baseSize": 124,
+    "knobSize": 64
+  },
+  "hudScore": {
+    "w": 990,
+    "h": 288
+  },
+  "fpsMeasured": 10.1,
+  "frameMs": 99.1,
+  "fpsReported": 12,
+  "jsHeapMB": null
+}

@@ -50,15 +50,17 @@
 
 脚本：`minigame/tools/diag-start.mjs`（内置静态服务 + 无头 Chrome + SwiftShader）。结果 JSON：`docs/start-diag-shipped.json`、`docs/start-diag-fixed.json`。
 
+"旧构建"= 开始排查时工作区里的 `js/main.js` 副本（`.tmp/main-shipped.js`，与体验版同源、尚未含 watchdog）；"新构建"= 本次修复后的 `js/main.js`。`--old` 通过请求拦截把页面里的 bundle 换成旧副本，其余条件完全相同。
+
 | 组合 | 模拟的真机差异 | 旧构建 | 新构建 |
 | --- | --- | --- | --- |
 | `base` | 常规 | 循环活，点开始→playing | 循环活，点开始→playing |
 | `noraf` | 全局 rAF 不存在 | 活（走 canvas.rAF） | 活 |
-| `noraf+canvasraf` | 只有 canvas.rAF | **死**（垫片包装自递归，一帧不跑） | 活（`driver=timer`） |
-| `canvasraf` | 同上 | **死** | 活（`driver=timer`） |
+| `noraf+canvasraf` | 只有 canvas.rAF | 启动未完成（白屏，模拟器组合，形态不符） | 活（`driver=timer`） |
+| `canvasraf` | 同上 | 启动未完成（白屏，模拟器组合，形态不符） | 活（`driver=timer`） |
 | `rafonce` | **rAF 只回调一次后静默失联** | **死（首页定格 + 点击无反应，完全复现）** | 活（watchdog 320ms 接管） |
 | `noraf+rafonce` | 双重缺失 | **死** | 活 |
-| `rafnots` | rAF 回调不传时间戳（dt=NaN） | **死** | 活（dt 改用 `platform.now()`） |
+| `rafnots` | rAF 回调不传时间戳（dt=NaN） | 启动未完成（白屏，模拟器组合，形态不符） | 活（dt 改用 `platform.now()`） |
 | `audiofail` | `createWebAudioContext` 抛错 | 循环活但**点击无效**（`state=start`） | 活，点击正常进场 |
 | `nocloud` | `wx.cloud` 缺失（但配了 CLOUD_ENV） | 正常 | 正常（`cloud-init` 失败被捕获） |
 | `dpr3` | pixelRatio=3 | 正常 | 正常 |
@@ -71,26 +73,26 @@
 
 - 画布像素：390×844 CSS，DPR 钳制为 2（`platform/wx-shim.ts:55` `Math.min(pixelRatio,2)`）→ 绘制缓冲 **780×1688 = 1,316,640 px**（面板 `buf` 行可见）。
   - 若去掉钳制，iPhone DPR=3 会是 1170×2532 = **2,963,820 px（约 2.25 倍，不是 9 倍——因为 CSS 尺寸不变）**；`?dpr=3` 组合实测 `buf` 仍是 780×1688，耗时与 `base` 同一量级，没有爆炸。
-- 地板烘焙（`render/arena.ts:99` `floorTexture()`）：画布 704×1104 = **777,216 px**；噪点是 `step=4` 抽样（`render/arena.ts:26-39`），每遍 176×276 = **48,576 次 `fillRect`**，全图 2 遍 ≈ **9.7 万次**——**没有 `getImageData` 全像素读写、没有 O(n²) 双重循环**。这一步只在构造期发生一次，实测包含它的 `scene-ctor` = 116ms。
+- 地板烘焙（`render/arena.ts:99` `floorTexture()`）：画布 704×1104 = **777,216 px**；噪点是 `step=4` 抽样（`render/arena.ts:26-39`），每遍 176×276 = **48,576 次 `fillRect`**，全图 2 遍 ≈ **9.7 万次**——**没有 `getImageData` 全像素读写、没有 O(n²) 双重循环**。这一步只在构造期发生一次，实测包含它的 `scene-ctor` = 97–116ms（多次运行抖动）。
 - 角色贴图：8 个角色各 1 张 canvas 贴图，在 `createWorld → scene.build()` 时生成；同类阵容重开已复用（`scene.ts build()` 阵容签名）。
 - 启动阶段耗时（`?debug=1` 真实打点，无头 Chrome + SwiftShader 软件渲染，真机 CPU/GPU 会不同但量级一致）：
 
 ```
-base : cloud-init +8ms · boot +1ms · scene-ctor +116ms(dpr=2 390x844) ·
-       world-ready +25ms · screens-ready +19ms · schedule +2ms driver=raf ·
-       first-frame +133ms dt=57ms          → 到首帧累计 304ms
-dpr3 : cloud-init +12ms · scene-ctor +193ms · world-ready +32ms ·
-       screens-ready +23ms · first-frame +206ms dt=87ms  → 到首帧累计 469ms
+base : cloud-init +8ms · boot +1ms · scene-ctor +97ms(dpr=2 390x844) ·
+       world-ready +20ms · screens-ready +14ms · schedule +2ms driver=raf ·
+       first-frame +117ms dt=49ms          → 到首帧累计 259ms
+dpr3 : cloud-init +13ms · scene-ctor +145ms · world-ready +31ms · screens-ready +23ms ·
+       first-frame +151ms dt=62ms          → 到首帧累计 366ms
 ```
 
 - 点「开始比赛」→ 进入对局（已拆成 3 帧，每帧一步）：
 
 ```
-base : audio-ok +0ms → start:world +68ms → start:match +85ms → start:play +23ms   （合计 176ms）
-dpr3 : audio-ok +1ms → start:world +79ms → start:match +79ms → start:play +93ms   （合计 252ms）
+base : audio-ok +0ms → start:world +74ms → start:match +85ms → start:play +83ms   （合计 242ms）
+dpr3 : audio-ok +0ms → start:world +93ms → start:match +96ms → start:play +88ms   （合计 277ms）
 ```
 
-单帧最大仍 ~90ms（软件渲染），在真机上主要是建世界与 8 张角色贴图的首次生成；同阵容重开已复用，不再重复烘焙。
+（同一环境重复跑抖动约 ±30%，关键是分帧后单帧 ≈ 70–100ms，不再有一次性 300ms+ 的长任务。单帧峰值主要在 `start:world`：建世界 + 8 张角色贴图首次生成；同阵容重开已复用，不再重复烘焙。）
 
 ## 五、改了什么
 
