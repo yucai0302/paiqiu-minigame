@@ -239,6 +239,18 @@ export class SceneView {
     this.camera.updateProjectionMatrix();
   }
 
+  /**
+   * 运行时降档（低端机帧率不够时由 App 调用，只会降低不会升高）。
+   * 只改主画布缓冲尺寸，启动期烘焙的 2D 贴图不动，不触发重烘焙。
+   */
+  setPixelRatio(dpr: number): boolean {
+    const cur = this.renderer.getPixelRatio();
+    if (Math.abs(cur - dpr) < 0.01) return false;
+    this.renderer.setPixelRatio(dpr);
+    this.renderer.setSize(this.width, this.height, false);
+    return true;
+  }
+
   build(world: World): void {
     const key = world.players.map((p) => `${p.id}:${p.name}:${p.team}`).join('|');
     if (key === this.rosterKey && this.views.size === world.players.length) {

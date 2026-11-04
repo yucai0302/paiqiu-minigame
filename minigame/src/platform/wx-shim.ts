@@ -6,6 +6,8 @@
 declare const wx: any;
 declare const GameGlobal: any;
 
+import { resolveRenderProfile, setRenderProfile } from './resolution';
+
 const g: any = typeof globalThis !== 'undefined' ? globalThis : GameGlobal;
 
 /**
@@ -49,10 +51,46 @@ const patchCanvasDom = (c: any): any => {
 export const wxCanvas = patchCanvasDom(wx.createCanvas());
 const info: any = (wx.getWindowInfo ? wx.getWindowInfo() : wx.getSystemInfoSync()) || {};
 
+/** 安卓有 benchmarkLevel，iOS 没有；拿不到返回 -1，由分辨率策略按屏幕规模推断 */
+const benchmarkLevel = ((): number => {
+  try {
+    if (typeof wx.getDeviceBenchmarkInfo === 'function') {
+      const b = wx.getDeviceBenchmarkInfo();
+      if (b && b.benchmarkLevel > 0) return b.benchmarkLevel;
+    }
+    const d = typeof wx.getDeviceInfo === 'function' ? wx.getDeviceInfo() : null;
+    if (d && d.benchmarkLevel > 0) return d.benchmarkLevel;
+  } catch {
+    // 老基础库没有这些接口
+  }
+  return -1;
+})();
+
+const launchQuery = ((): Record<string, string> => {
+  try {
+    return (wx.getLaunchOptionsSync && wx.getLaunchOptionsSync().query) || {};
+  } catch {
+    return {};
+  }
+})();
+
+const profile = resolveRenderProfile(
+  info.windowWidth || info.screenWidth || 375,
+  info.windowHeight || info.screenHeight || 667,
+  info.pixelRatio || 2,
+  benchmarkLevel,
+  launchQuery.q,
+  Number(launchQuery.dpr) || undefined,
+);
+setRenderProfile(profile);
+
 export const screen = {
   width: info.windowWidth || info.screenWidth || 375,
   height: info.windowHeight || info.screenHeight || 667,
-  dpr: Math.min(info.pixelRatio || 2, 2),
+  dpr: profile.dpr,
+  /** 设备原始像素比（用于诊断），主画布实际使用上面的 dpr */
+  deviceDpr: Math.min(info.pixelRatio || 2, 4),
+  quality: profile.tier,
   safeTop: info.safeArea ? Math.max(0, info.safeArea.top || 0) : 0,
   safeBottom: info.safeArea
     ? Math.max(0, (info.windowHeight || info.screenHeight || 0) - info.safeArea.bottom)

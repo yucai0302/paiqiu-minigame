@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 
-import { createUiCanvas, makeTexture, setSpriteTexture, uiSprite } from './draw';
+import { createUiCanvas, makeTexture, uiSprite } from './draw';
 import type { UiLayer } from './layer';
 
 const FONT = '"PingFang SC","Microsoft YaHei",system-ui,sans-serif';
@@ -16,14 +16,17 @@ export class DebugPanel {
   private readonly W = 356;
   private readonly H = 142;
   private readonly topY = 14;
+  // 画布/贴图只建一次（DPR3 下 1068×426 ≈ 1.8MB），之后原地重绘
+  private readonly canvasUi = createUiCanvas(this.W, this.H);
+  private readonly tex: THREE.CanvasTexture;
 
   constructor(
     ui: UiLayer,
     private readonly screenH: number,
   ) {
-    const { canvas } = createUiCanvas(this.W, this.H, 2);
+    this.tex = makeTexture(this.canvasUi.canvas);
     this.sprite = uiSprite(
-      makeTexture(canvas),
+      this.tex,
       this.W,
       this.H,
       10 + this.W / 2,
@@ -53,7 +56,9 @@ export class DebugPanel {
   }
 
   private redraw(): void {
-    const { canvas, ctx } = createUiCanvas(this.W, this.H, 2);
+    const { ctx, scale } = this.canvasUi;
+    ctx.setTransform(scale, 0, 0, scale, 0, 0);
+    ctx.clearRect(0, 0, this.W, this.H);
     ctx.fillStyle = 'rgba(5,12,22,0.82)';
     ctx.fillRect(0, 0, this.W, this.H);
     ctx.strokeStyle = 'rgba(110,200,255,0.45)';
@@ -70,6 +75,6 @@ export class DebugPanel {
       ctx.fillText(line, 9, y);
       y += 16;
     }
-    setSpriteTexture(this.sprite, makeTexture(canvas));
+    this.tex.needsUpdate = true;
   }
 }

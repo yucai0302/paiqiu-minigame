@@ -1,4 +1,5 @@
 import * as THREE from 'three';
+import { labelTextureBoost } from '../platform/resolution';
 import { shadowTexture } from './arena';
 import { SAFE_MODE } from '../platform/flags';
 import type { Player } from '../sim/types';
@@ -87,10 +88,14 @@ function roundRect(
 }
 
 function makeLabel(name: string, color: string, num: number): THREE.Sprite {
+  // 名牌在世界里约 2.35 单位宽，投影到 DPR3 设备上约 230px；
+  // 原 256×112 贴图几乎 1:1，文字边缘被放大。按档位提升到 320×140（1.25x）。
+  const k = labelTextureBoost();
   const c = document.createElement('canvas');
-  c.width = 256;
-  c.height = 112;
+  c.width = Math.round(256 * k);
+  c.height = Math.round(112 * k);
   const g = c.getContext('2d')!;
+  if (k !== 1) g.scale(k, k);
   g.textAlign = 'center';
   g.textBaseline = 'middle';
   g.lineJoin = 'round';

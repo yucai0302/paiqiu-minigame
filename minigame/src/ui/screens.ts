@@ -1,11 +1,13 @@
 import * as THREE from 'three';
 
 import { SAFE_MODE } from '../platform/flags';
+import { layerTextureScale } from '../platform/resolution';
 import type { TouchPoint } from '../platform/types';
 import type { Skill } from '../sim/ai';
 import type { TeamId } from '../sim/types';
 import type { World } from '../sim/world';
 import { createUiCanvas, makeTexture, roundedRect, setSpriteTexture, uiSprite } from './draw';
+import type { UiCanvas } from './draw';
 import type { UiLayer } from './layer';
 
 const FONT = '"PingFang SC","Microsoft YaHei",system-ui,sans-serif';
@@ -84,7 +86,8 @@ function makeSprite(
 function titleTexture(): { tex: THREE.Texture; w: number; h: number } {
   const w = 360;
   const h = 168;
-  const { canvas, ctx } = createUiCanvas(w, h, 2);
+  // 标题/立绘/CTA/难度卡：跟设备 DPR 烘焙（默认 uiTextureScale），避免 2x 贴图在 DPR3 上被放大 1.5x
+  const { canvas, ctx } = createUiCanvas(w, h);
   const cx = w / 2;
 
   ctx.save();
@@ -96,16 +99,16 @@ function titleTexture(): { tex: THREE.Texture; w: number; h: number } {
   ctx.lineJoin = 'round';
   // 投影
   ctx.fillStyle = 'rgba(8,18,32,0.55)';
-  ctx.fillText('Q版排球', 4, 7);
+  ctx.fillText('弹弹排球', 4, 7);
   // 描边 + 主体
   ctx.lineWidth = 9;
   ctx.strokeStyle = '#16324a';
-  ctx.strokeText('Q版排球', 0, 0);
+  ctx.strokeText('弹弹排球', 0, 0);
   const grad = ctx.createLinearGradient(0, -34, 0, 34);
   grad.addColorStop(0, '#ffffff');
   grad.addColorStop(1, '#bfe8ff');
   ctx.fillStyle = grad;
-  ctx.fillText('Q版排球', 0, 0);
+  ctx.fillText('弹弹排球', 0, 0);
   ctx.restore();
 
   // 副标题胶囊
@@ -125,7 +128,8 @@ function titleTexture(): { tex: THREE.Texture; w: number; h: number } {
 function chibiTexture(kit: string, hair: string, flip: boolean): { tex: THREE.Texture; w: number; h: number } {
   const w = 96;
   const h = 124;
-  const { canvas, ctx } = createUiCanvas(w, h, 2);
+  // 标题/立绘/CTA/难度卡：跟设备 DPR 烘焙（默认 uiTextureScale），避免 2x 贴图在 DPR3 上被放大 1.5x
+  const { canvas, ctx } = createUiCanvas(w, h);
   const cx = w / 2;
   if (flip) {
     ctx.translate(w, 0);
@@ -201,7 +205,8 @@ function chibiTexture(kit: string, hair: string, flip: boolean): { tex: THREE.Te
 function ctaTexture(label: string, pressed: boolean): { tex: THREE.Texture; w: number; h: number } {
   const w = 280;
   const h = 92;
-  const { canvas, ctx } = createUiCanvas(w, h, 2);
+  // 标题/立绘/CTA/难度卡：跟设备 DPR 烘焙（默认 uiTextureScale），避免 2x 贴图在 DPR3 上被放大 1.5x
+  const { canvas, ctx } = createUiCanvas(w, h);
   const bx = 10;
   const by = 10;
   const bw = w - 20;
@@ -253,7 +258,8 @@ function diffCardTexture(
 ): { tex: THREE.Texture; w: number; h: number } {
   const w = 112;
   const h = 104;
-  const { canvas, ctx } = createUiCanvas(w, h, 2);
+  // 标题/立绘/CTA/难度卡：跟设备 DPR 烘焙（默认 uiTextureScale），避免 2x 贴图在 DPR3 上被放大 1.5x
+  const { canvas, ctx } = createUiCanvas(w, h);
   const cx = w / 2;
 
   if (selected) {
@@ -343,6 +349,13 @@ export class Screens {
   state: Screen = 'none';
   private skill: Skill = 'normal';
   private readonly panelTop: number;
+  /**
+   * 全屏 2D 层（首页静态层 / 房间 / 结算 / 暂停共用一张画布 + 一张贴图）。
+   * 只建一次、原地重绘 + needsUpdate：DPR3 下单张 390×844 约 11.8MB，
+   * 频繁切页面若每次新建 canvas 会造成明显 GC 抖动。
+   */
+  private layer: UiCanvas | null = null;
+  private layerTex: THREE.CanvasTexture | null = null;
 
   // 首页动效元素（仅 transform 动画，不逐帧重绘 canvas，低端机友好）
   private titleSpr: THREE.Sprite | null = null;
@@ -596,10 +609,33 @@ export class Screens {
     this.drawStatic();
   }
 
+  /** 取全屏层的 2D 上下文：首次建画布/贴图，之后只清屏复用 */
+  private layerCanvas(): CanvasRenderingContext2D {
+    if (!this.layer) {
+      this.layer = createUiCanvas(this.W, this.H, layerTextureScale());
+      const mat = this.bg.material as THREE.SpriteMaterial;
+      mat.map?.dispose();
+      this.layerTex = makeTexture(this.layer.canvas);
+      mat.map = this.layerTex;
+      mat.needsUpdate = true;
+      this.bg.scale.set(this.W, this.H, 1);
+    }
+    const ctx = this.layer.ctx;
+    ctx.setTransform(this.layer.scale, 0, 0, this.layer.scale, 0, 0);
+    ctx.clearRect(0, 0, this.W, this.H);
+    return ctx;
+  }
+
+  private commitLayer(): void {
+    if (!this.layer || !this.layerTex) return;
+    this.layerTex.needsUpdate = true;
+    this.bg.scale.set(this.W, this.H, 1);
+  }
+
   /** 静态层：暗化罩、VS、引导语、图标提示条、规则、版本（仅在进入/切换难度时重绘） */
   private drawStatic(): void {
     const ly = layout(this.W, this.H, this.panelTop);
-    const { canvas, ctx } = createUiCanvas(this.W, this.H, 1.5);
+    const ctx = this.layerCanvas();
 
     // 轻暗化：保住场馆舞台感
     ctx.fillStyle = 'rgba(6,14,26,0.38)';
@@ -708,8 +744,7 @@ export class Screens {
     ctx.font = `600 10.5px ${FONT}`;
     ctx.fillText('微信小游戏 · 竖屏手柄版', ly.cx, ly.verY);
 
-    setSpriteTexture(this.bg, makeTexture(canvas));
-    this.bg.scale.set(this.W, this.H, 1);
+    this.commitLayer();
   }
 
   private refreshDiff(): void {
@@ -814,7 +849,7 @@ export class Screens {
   }
 
   private drawFatal(): void {
-    const { canvas, ctx } = this.overlay();
+    const { ctx } = this.overlay();
     ctx.fillStyle = 'rgba(4,9,16,0.34)';
     ctx.fillRect(0, 0, this.W, this.H);
     const cx = this.W / 2;
@@ -861,8 +896,7 @@ export class Screens {
       '#c6d6ea',
       13,
     );
-    setSpriteTexture(this.bg, makeTexture(canvas));
-    this.bg.scale.set(this.W, this.H, 1);
+    this.commitLayer();
   }
 
   private wrapFatal(msg: string): string[] {
@@ -910,7 +944,7 @@ export class Screens {
   }
 
   private drawRoom(): void {
-    const { canvas, ctx } = this.overlay();
+    const { ctx } = this.overlay();
     const cx = this.W / 2;
     const pw = 322;
     const ph = 420;
@@ -1035,12 +1069,11 @@ export class Screens {
       12.5,
     );
 
-    setSpriteTexture(this.bg, makeTexture(canvas));
-    this.bg.scale.set(this.W, this.H, 1);
+    this.commitLayer();
   }
 
   private drawNetDown(): void {
-    const { canvas, ctx } = this.overlay();
+    const { ctx } = this.overlay();
     ctx.fillStyle = 'rgba(4,9,16,0.28)';
     ctx.fillRect(0, 0, this.W, this.H);
     const cx = this.W / 2;
@@ -1099,18 +1132,17 @@ export class Screens {
         15,
       );
     }
-    setSpriteTexture(this.bg, makeTexture(canvas));
-    this.bg.scale.set(this.W, this.H, 1);
+    this.commitLayer();
   }
 
   // ---------------------------------------------------------------- 结算 / 暂停（深色玻璃面板）
 
-  private overlay(): { canvas: HTMLCanvasElement; ctx: CanvasRenderingContext2D } {
+  private overlay(): { ctx: CanvasRenderingContext2D } {
     this.hits = [];
-    const { canvas, ctx } = createUiCanvas(this.W, this.H, 1.5);
+    const ctx = this.layerCanvas();
     ctx.fillStyle = 'rgba(6,14,26,0.55)';
     ctx.fillRect(0, 0, this.W, this.H);
-    return { canvas, ctx };
+    return { ctx };
   }
 
   private glassPanel(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number): void {
@@ -1126,7 +1158,7 @@ export class Screens {
   }
 
   private drawResult(world: World, winner: TeamId, mvp: string): void {
-    const { canvas, ctx } = this.overlay();
+    const { ctx } = this.overlay();
     const cx = this.W / 2;
     const y = Math.round((this.H - 470) / 2);
     this.glassPanel(ctx, 34, y, 322, 470);
@@ -1194,12 +1226,11 @@ export class Screens {
     this.hits.push({ id: 'again', x: cx - 140, y: y + 306, w: 280, h: 92 });
 
     this.ghostButton(ctx, 'home', cx - 110, y + 414, 220, 44, '返回大厅');
-    setSpriteTexture(this.bg, makeTexture(canvas));
-    this.bg.scale.set(this.W, this.H, 1);
+    this.commitLayer();
   }
 
   private drawPause(): void {
-    const { canvas, ctx } = this.overlay();
+    const { ctx } = this.overlay();
     const y = Math.round((this.H - 300) / 2);
     this.glassPanel(ctx, 45, y, 300, 300);
 
@@ -1218,8 +1249,7 @@ export class Screens {
     this.hits.push({ id: 'resume', x: this.W / 2 - 140, y: y + 100, w: 280, h: 92 });
 
     this.ghostButton(ctx, 'home', this.W / 2 - 110, y + 208, 220, 46, '返回大厅');
-    setSpriteTexture(this.bg, makeTexture(canvas));
-    this.bg.scale.set(this.W, this.H, 1);
+    this.commitLayer();
   }
 
   private ghostButton(

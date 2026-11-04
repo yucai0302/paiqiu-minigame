@@ -35,8 +35,9 @@
         }
 
         var qs = location.search;
-        // ?dpr=3 模拟 iPhone 等 pixelRatio=3 的设备（垫片会按 2 封顶，与真机一致）
+        // ?dpr=3 模拟 iPhone 等 pixelRatio=3 的设备；?safeBottom=34 模拟 Home indicator 安全区
         var simDpr = Number((qs.match(/[?&]dpr=(\d+(?:\.\d+)?)/) || [])[1]) || 2;
+        var simSafeBottom = Number((qs.match(/[?&]safeBottom=(\d+(?:\.\d+)?)/) || [])[1]) || 0;
 
         var rawCanvas = /[?&]rawcanvas=1/.test(location.search);
 
@@ -74,7 +75,8 @@
               windowWidth: 390,
               windowHeight: 844,
               pixelRatio: simDpr,
-              safeArea: { top: 0, bottom: 844 },
+              // ?safeBottom=34 模拟刘海屏/Home indicator 安全区
+              safeArea: { top: 0, bottom: 844 - simSafeBottom },
             };
           },
           getSystemInfoSync: function () {
@@ -84,7 +86,7 @@
               screenWidth: 390,
               screenHeight: 844,
               pixelRatio: simDpr,
-              safeArea: { top: 0, bottom: 844 },
+              safeArea: { top: 0, bottom: 844 - simSafeBottom },
             };
           },
           // 冷启动参数：把 location.search 解析成 query 对象（?room=123456&nick=xx）

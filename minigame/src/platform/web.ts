@@ -1,4 +1,5 @@
 import type { CanvasLike, Platform, TouchPoint } from './types';
+import { resolveRenderProfile, setRenderProfile } from './resolution';
 
 const toPoint = (e: PointerEvent | MouseEvent, id: number): TouchPoint => {
   const rect = canvas.getBoundingClientRect();
@@ -64,13 +65,23 @@ export function createWebPlatform(): Platform {
     mouseId = -1;
   });
 
-  const dprQuery = Number(new URLSearchParams(window.location.search).get('dpr'));
+  const params = new URLSearchParams(window.location.search);
+  const dprQuery = Number(params.get('dpr'));
+  const profile = resolveRenderProfile(
+    width,
+    height,
+    window.devicePixelRatio || 1,
+    -1,
+    params.get('q') ?? undefined,
+    dprQuery > 0 ? dprQuery : undefined,
+  );
+  setRenderProfile(profile);
   return {
     canvas: canvas as unknown as CanvasLike,
     width,
     height,
-    // ?dpr=3 仅用于本地压测高 DPR；真实设备上仍按 2 封顶（iPhone 常见 3）
-    dpr: dprQuery > 0 ? dprQuery : Math.min(window.devicePixelRatio || 1, 2),
+    // 默认按设备 DPR + 像素预算分档；?dpr=3 仅用于本地压测高 DPR
+    dpr: profile.dpr,
     safeTop: 0,
     safeBottom: 0,
     createCanvas(w: number, h: number): CanvasLike {

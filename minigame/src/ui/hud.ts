@@ -2,12 +2,22 @@ import * as THREE from 'three';
 
 import { MATCH } from '../sim/config';
 import type { World } from '../sim/world';
-import { createUiCanvas, makeTexture, roundedRect, setSpriteTexture, textTexture, uiSprite } from './draw';
+import { createUiCanvas, makeTexture, roundedRect, textTexture, uiSprite, type UiCanvas } from './draw';
 import type { UiLayer } from './layer';
 
 const FONT = '"PingFang SC","Microsoft YaHei",system-ui,sans-serif';
 
-/** 顶部记分板、播报、触球计数、蓄力条、暂停键 */
+interface Surface extends UiCanvas {
+  readonly w: number;
+  readonly h: number;
+  readonly tex: THREE.CanvasTexture;
+}
+
+/**
+ * 顶部记分板、播报、触球计数、蓄力条、暂停键。
+ * 所有会反复变化的画布都"只建一次、原地重绘 + needsUpdate"，
+ * 避免对局中每得一分就新建一张大 canvas（DPR3 下单张 ≈1.1MB）。
+ */
 export class Hud {
   private root = new THREE.Group();
   private scoreSprite: THREE.Sprite;
@@ -17,6 +27,10 @@ export class Hud {
   private serveFill: THREE.Mesh;
   private pauseBg: THREE.Mesh;
   private pauseIcon: THREE.Sprite;
+
+  private score: Surface;
+  private announceUi: Surface;
+  private touch: Surface;
 
   private scoreKey = '';
   private touchKey = -1;
@@ -30,15 +44,15 @@ export class Hud {
     this.W = W;
     this.y0 = H - padH;
 
-    const blank = createUiCanvas(330, 96, 2);
+    this.score = this.surface(330, 96);
     const top = Math.min(safeTop, 60);
-    this.scoreSprite = uiSprite(makeTexture(blank.canvas), 330, 96, W / 2, H - (52 + top), 12);
+    this.scoreSprite = uiSprite(this.score.tex, 330, 96, W / 2, H - (52 + top), 12);
     this.root.add(this.scoreSprite);
 
-    const blankAnnounce = createUiCanvas(340, 104, 2);
+    this.announceUi = this.surface(340, 104);
     const announceShift = Math.min(safeTop, 30);
     this.announceSprite = uiSprite(
-      makeTexture(blankAnnounce.canvas),
+      this.announceUi.tex,
       340,
       104,
       W / 2,
@@ -48,19 +62,12 @@ export class Hud {
     this.announceSprite.visible = false;
     this.root.add(this.announceSprite);
 
-    const blankTouch = createUiCanvas(118, 28, 2);
-    this.touchSprite = uiSprite(
-      makeTexture(blankTouch.canvas),
-      118,
-      28,
-      78,
-      H - (this.y0 - 64),
-      12,
-    );
+    this.touch = this.surface(118, 28);
+    this.touchSprite = uiSprite(this.touch.tex, 118, 28, 78, H - (this.y0 - 64), 12);
     this.root.add(this.touchSprite);
 
     // 蓄力条：圆角深色轨道（与手柄区深色带统一）+ 绿→黄→红渐变填充
-    const trackC = createUiCanvas(190, 14, 2);
+    const trackC = createUiCanvas(190, 14);
     roundedRect(trackC.ctx, 1, 1, 188, 12, 6);
     trackC.ctx.fillStyle = 'rgba(10,17,28,0.55)';
     trackC.ctx.fill();
@@ -71,7 +78,7 @@ export class Hud {
     this.serveTrack.visible = false;
     this.root.add(this.serveTrack);
 
-    const fillC = createUiCanvas(178, 8, 2);
+    const fillC = createUiCanvas(178, 8);
     const fillGrad = fillC.ctx.createLinearGradient(0, 0, 178, 0);
     fillGrad.addColorStop(0, '#34d399');
     fillGrad.addColorStop(0.55, '#fbbf24');
@@ -118,6 +125,18 @@ export class Hud {
     ui.scene.add(this.root);
   }
 
+  private surface(w: number, h: number): Surface {
+    const ui = createUiCanvas(w, h);
+    return { ...ui, w, h, tex: makeTexture(ui.canvas) };
+  }
+
+  private paint(s: Surface, draw: (ctx: CanvasRenderingContext2D) => void): void {
+    s.ctx.setTransform(s.scale, 0, 0, s.scale, 0, 0);
+    s.ctx.clearRect(0, 0, s.w, s.h);
+    draw(s.ctx);
+    s.tex.needsUpdate = true;
+  }
+
   setVisible(v: boolean): void {
     this.root.visible = v;
   }
@@ -160,28 +179,27 @@ export class Hud {
 
   announce(text: string, sub?: string, ms = 1200): void {
     if (!text) return;
-    const { canvas, ctx } = createUiCanvas(340, 104, 2);
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.lineJoin = 'round';
+    this.paint(this.announceUi, (ctx) => {
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.lineJoin = 'round';
 
-    ctx.font = `900 40px ${FONT}`;
-    ctx.lineWidth = 10;
-    ctx.strokeStyle = 'rgba(9,26,44,0.55)';
-    ctx.strokeText(text, 170, sub ? 44 : 52);
-    ctx.fillStyle = '#ffffff';
-    ctx.fillText(text, 170, sub ? 44 : 52);
+      ctx.font = `900 40px ${FONT}`;
+      ctx.lineWidth = 10;
+      ctx.strokeStyle = 'rgba(9,26,44,0.55)';
+      ctx.strokeText(text, 170, sub ? 44 : 52);
+      ctx.fillStyle = '#ffffff';
+      ctx.fillText(text, 170, sub ? 44 : 52);
 
-    if (sub) {
-      ctx.font = `600 14px ${FONT}`;
-      ctx.lineWidth = 6;
-      ctx.strokeStyle = 'rgba(9,26,44,0.5)';
-      ctx.strokeText(sub, 170, 80);
-      ctx.fillStyle = 'rgba(255,255,255,0.92)';
-      ctx.fillText(sub, 170, 80);
-    }
-
-    setSpriteTexture(this.announceSprite, makeTexture(canvas));
+      if (sub) {
+        ctx.font = `600 14px ${FONT}`;
+        ctx.lineWidth = 6;
+        ctx.strokeStyle = 'rgba(9,26,44,0.5)';
+        ctx.strokeText(sub, 170, 80);
+        ctx.fillStyle = 'rgba(255,255,255,0.92)';
+        ctx.fillText(sub, 170, 80);
+      }
+    });
     this.announceSprite.visible = true;
     this.announceSprite.scale.set(340, 104, 1);
     (this.announceSprite.material as THREE.SpriteMaterial).opacity = 1;
@@ -197,100 +215,99 @@ export class Hud {
   }
 
   private drawScore(world: World, clock: number, warn: boolean): void {
-    const { canvas, ctx } = createUiCanvas(330, 96, 2);
     const [s0, s1] = world.scores;
     const server = world.players.find((p) => p.id === world.serverId);
     const serveTeam = server ? server.team : -1;
 
-    // 深色电子屏面板
-    roundedRect(ctx, 1, 1, 328, 94, 14);
-    ctx.fillStyle = 'rgba(10,17,30,0.94)';
-    ctx.fill();
-    ctx.lineWidth = 1.5;
-    ctx.strokeStyle = 'rgba(120,160,220,0.4)';
-    ctx.stroke();
-    ctx.strokeStyle = 'rgba(255,255,255,0.12)';
-    ctx.beginPath();
-    ctx.moveTo(16, 3);
-    ctx.lineTo(314, 3);
-    ctx.stroke();
-
-    ctx.textBaseline = 'middle';
-
-    // 顶行：SET | 计时 mm:ss | 目标分
-    ctx.font = `700 11px ${FONT}`;
-    ctx.fillStyle = '#8ea3c2';
-    ctx.textAlign = 'left';
-    ctx.fillText(`SET ${world.setIndex + 1}`, 18, 16);
-    ctx.textAlign = 'right';
-    ctx.fillText(`to ${MATCH.pointsToWinSet}`, 312, 16);
-    ctx.textAlign = 'center';
-    ctx.font = `800 17px ${FONT}`;
-    ctx.fillStyle = warn ? '#ff6b6b' : '#e8f0ff';
-    ctx.fillText(`${Math.floor(clock / 60)}:${String(clock % 60).padStart(2, '0')}`, 165, 16);
-
-    // 队名胶囊（队色与角色球衣一致）+ 发球方亮点
-    const capsule = (x: number, label: string, color: string, serving: boolean): void => {
-      roundedRect(ctx, x, 34, 76, 26, 13);
-      ctx.fillStyle = color;
+    this.paint(this.score, (ctx) => {
+      // 深色电子屏面板
+      roundedRect(ctx, 1, 1, 328, 94, 14);
+      ctx.fillStyle = 'rgba(10,17,30,0.94)';
       ctx.fill();
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = 'rgba(120,160,220,0.4)';
+      ctx.stroke();
+      ctx.strokeStyle = 'rgba(255,255,255,0.12)';
+      ctx.beginPath();
+      ctx.moveTo(16, 3);
+      ctx.lineTo(314, 3);
+      ctx.stroke();
+
+      ctx.textBaseline = 'middle';
+
+      // 顶行：SET | 计时 mm:ss | 目标分
+      ctx.font = `700 11px ${FONT}`;
+      ctx.fillStyle = '#8ea3c2';
+      ctx.textAlign = 'left';
+      ctx.fillText(`SET ${world.setIndex + 1}`, 18, 16);
+      ctx.textAlign = 'right';
+      ctx.fillText(`to ${MATCH.pointsToWinSet}`, 312, 16);
+      ctx.textAlign = 'center';
+      ctx.font = `800 17px ${FONT}`;
+      ctx.fillStyle = warn ? '#ff6b6b' : '#e8f0ff';
+      ctx.fillText(`${Math.floor(clock / 60)}:${String(clock % 60).padStart(2, '0')}`, 165, 16);
+
+      // 队名胶囊（队色与角色球衣一致）+ 发球方亮点
+      const capsule = (x: number, label: string, color: string, serving: boolean): void => {
+        roundedRect(ctx, x, 34, 76, 26, 13);
+        ctx.fillStyle = color;
+        ctx.fill();
+        ctx.fillStyle = '#ffffff';
+        ctx.font = `900 12px ${FONT}`;
+        ctx.fillText(label, x + 38, 47);
+        if (serving) {
+          ctx.beginPath();
+          ctx.arc(x + 38, 28, 3.4, 0, Math.PI * 2);
+          ctx.fillStyle = '#ffd75e';
+          ctx.fill();
+        }
+      };
+      capsule(14, 'HOME', '#16a34a', serveTeam === 0);
+      capsule(240, 'AWAY', '#e1437a', serveTeam === 1);
+
+      // 大比分（弱描边模拟 LED 发光）
+      ctx.font = `900 38px ${FONT}`;
+      ctx.lineWidth = 5;
+      ctx.strokeStyle = 'rgba(120,190,255,0.35)';
+      ctx.lineJoin = 'round';
+      ctx.strokeText(`${s0} : ${s1}`, 165, 49);
       ctx.fillStyle = '#ffffff';
-      ctx.font = `900 12px ${FONT}`;
-      ctx.fillText(label, x + 38, 47);
-      if (serving) {
+      ctx.fillText(`${s0} : ${s1}`, 165, 49);
+
+      // 局分指示（三局两胜）
+      for (let i = 0; i < 3; i++) {
         ctx.beginPath();
-        ctx.arc(x + 38, 28, 3.4, 0, Math.PI * 2);
-        ctx.fillStyle = '#ffd75e';
+        ctx.arc(150 + i * 15, 80, 3.4, 0, Math.PI * 2);
+        ctx.fillStyle =
+          i < world.setsWon[0] ? '#22c55e' : i >= 3 - world.setsWon[1] ? '#e1437a' : '#33415c';
         ctx.fill();
       }
-    };
-    capsule(14, 'HOME', '#16a34a', serveTeam === 0);
-    capsule(240, 'AWAY', '#e1437a', serveTeam === 1);
-
-    // 大比分（弱描边模拟 LED 发光）
-    ctx.font = `900 38px ${FONT}`;
-    ctx.lineWidth = 5;
-    ctx.strokeStyle = 'rgba(120,190,255,0.35)';
-    ctx.lineJoin = 'round';
-    ctx.strokeText(`${s0} : ${s1}`, 165, 49);
-    ctx.fillStyle = '#ffffff';
-    ctx.fillText(`${s0} : ${s1}`, 165, 49);
-
-    // 局分指示（三局两胜）
-    for (let i = 0; i < 3; i++) {
-      ctx.beginPath();
-      ctx.arc(150 + i * 15, 80, 3.4, 0, Math.PI * 2);
-      ctx.fillStyle =
-        i < world.setsWon[0] ? '#22c55e' : i >= 3 - world.setsWon[1] ? '#e1437a' : '#33415c';
-      ctx.fill();
-    }
-    ctx.font = `600 10px ${FONT}`;
-    ctx.fillStyle = '#66788f';
-    ctx.textAlign = 'left';
-    ctx.fillText('SETS', 18, 80);
-    ctx.textAlign = 'right';
-    ctx.fillText(`BO${MATCH.setsToWin * 2 - 1}`, 312, 80);
-
-    setSpriteTexture(this.scoreSprite, makeTexture(canvas));
+      ctx.font = `600 10px ${FONT}`;
+      ctx.fillStyle = '#66788f';
+      ctx.textAlign = 'left';
+      ctx.fillText('SETS', 18, 80);
+      ctx.textAlign = 'right';
+      ctx.fillText(`BO${MATCH.setsToWin * 2 - 1}`, 312, 80);
+    });
   }
 
   private drawTouch(t: number): void {
-    const { canvas, ctx } = createUiCanvas(118, 28, 2);
-    roundedRect(ctx, 0, 0, 118, 28, 14);
-    ctx.fillStyle = t >= 3 ? '#ffe2e2' : t === 2 ? '#fff0e2' : 'rgba(255,255,255,0.9)';
-    ctx.fill();
-    ctx.textAlign = 'left';
-    ctx.textBaseline = 'middle';
-    ctx.font = `700 12px ${FONT}`;
-    ctx.fillStyle = t >= 3 ? '#d94a4a' : t === 2 ? '#e08a2e' : '#4a5f76';
-    ctx.fillText(t >= 3 ? '触球已满' : `触球 ${t}/3`, 12, 14);
-
-    for (let i = 0; i < 3; i++) {
-      ctx.beginPath();
-      ctx.arc(88 + i * 9, 14, 3, 0, Math.PI * 2);
-      ctx.fillStyle = i < t ? (t >= 3 ? '#e14b4b' : '#35c47a') : '#dbe5f0';
+    this.paint(this.touch, (ctx) => {
+      roundedRect(ctx, 0, 0, 118, 28, 14);
+      ctx.fillStyle = t >= 3 ? '#ffe2e2' : t === 2 ? '#fff0e2' : 'rgba(255,255,255,0.9)';
       ctx.fill();
-    }
-    setSpriteTexture(this.touchSprite, makeTexture(canvas));
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.font = `700 12px ${FONT}`;
+      ctx.fillStyle = t >= 3 ? '#d94a4a' : t === 2 ? '#e08a2e' : '#4a5f76';
+      ctx.fillText(t >= 3 ? '触球已满' : `触球 ${t}/3`, 12, 14);
+
+      for (let i = 0; i < 3; i++) {
+        ctx.beginPath();
+        ctx.arc(88 + i * 9, 14, 3, 0, Math.PI * 2);
+        ctx.fillStyle = i < t ? (t >= 3 ? '#e14b4b' : '#35c47a') : '#dbe5f0';
+        ctx.fill();
+      }
+    });
   }
 }

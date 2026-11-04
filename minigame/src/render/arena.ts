@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { COURT } from '../sim/config';
 import { SAFE_MODE } from '../platform/flags';
+import { floorTextureBoost } from '../platform/resolution';
 
 /**
  * 室内排球馆场景。
@@ -97,11 +98,16 @@ export function ballTexture(): THREE.Texture {
  * 覆盖范围：比赛区外扩 3m 无障碍区（规则下限），即 14 x 22。
  */
 function floorTexture(): THREE.Texture {
+  // 地板在竖屏里横跨近整个屏宽，原 704×1104 投影到 1170 设备像素时会被放大 ~1.7x，
+  // 白线/中线因此发虚。按档位提升纹素密度（高 1.5x / 中 1.25x / 低 1.0x）。
+  const boost = floorTextureBoost();
   const W = 704;
   const H = 1104;
   const px = W / 14; // 每单位像素
   const pz = H / 22;
-  const [c, g] = canvas2d(W, H);
+  const [c, g] = canvas2d(Math.round(W * boost), Math.round(H * boost));
+  // 以下绘制仍用 CSS 尺度坐标，靠 canvas 变换放大，白线物理宽度保持不变
+  if (boost !== 1) g.scale(boost, boost);
 
   // 无障碍区：灰蓝
   g.fillStyle = '#46587a';
@@ -227,8 +233,10 @@ function ledBoardTexture(): THREE.Texture {
   g.font = '900 30px "PingFang SC","Microsoft YaHei",system-ui,sans-serif';
   g.textAlign = 'center';
   g.textBaseline = 'middle';
-  // 每 256px 一个独立单元，任意整数 repeat 都能无缝平铺
-  const words = ['Q-VOLLEY', 'SUPER LEAGUE', 'SPIKE!', 'Q-VOLLEY'];
+  // 每 256px 一个独立单元，任意整数 repeat 都能无缝平铺。
+  // 英文名用短版「DANDAN」：30px 粗体实测 142.5px（旧「Q-VOLLEY」153px），
+  // 12 字符的「DANDAN VOLLEY」实测 266.8px 会溢出 256px 单元并与分隔点相撞。
+  const words = ['DANDAN', 'SUPER LEAGUE', 'SPIKE!', 'DANDAN'];
   words.forEach((w, i) => {
     g.fillText(w, (i + 0.5) * 256, 26);
     g.fillStyle = 'rgba(255,255,255,0.5)';

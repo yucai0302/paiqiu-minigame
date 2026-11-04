@@ -1,20 +1,23 @@
 import * as THREE from 'three';
+import { uiTextureScale } from '../platform/resolution';
 
 const FONT_STACK = '"PingFang SC","Microsoft YaHei",system-ui,sans-serif';
 
 export interface UiCanvas {
   canvas: HTMLCanvasElement;
   ctx: CanvasRenderingContext2D;
+  /** 画布像素 / CSS 像素 */
+  scale: number;
 }
 
-/** 以 CSS 尺寸建画布，内部按 scale 放大保证清晰度 */
-export function createUiCanvas(width: number, height: number, scale = 2): UiCanvas {
+/** 以 CSS 尺寸建画布，内部按分辨率策略的 UI 倍率放大，保证与设备像素对齐 */
+export function createUiCanvas(width: number, height: number, scale = uiTextureScale()): UiCanvas {
   const canvas = document.createElement('canvas');
   canvas.width = Math.max(1, Math.round(width * scale));
   canvas.height = Math.max(1, Math.round(height * scale));
   const ctx = canvas.getContext('2d') as CanvasRenderingContext2D;
   ctx.scale(scale, scale);
-  return { canvas, ctx };
+  return { canvas, ctx, scale };
 }
 
 export function makeTexture(canvas: HTMLCanvasElement): THREE.CanvasTexture {
@@ -90,7 +93,7 @@ export function textTexture(
   const fontSize = opts.fontSize ?? 16;
   const weight = opts.weight ?? 700;
   const pad = opts.pad ?? 4;
-  const scale = opts.scale ?? 2;
+  const scale = opts.scale ?? uiTextureScale();
   const font = `${weight} ${fontSize}px ${FONT_STACK}`;
 
   const probe = document.createElement('canvas').getContext('2d') as CanvasRenderingContext2D;
