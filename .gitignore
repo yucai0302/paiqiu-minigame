@@ -19,4 +19,5 @@ minigame/project.private.config.json
 
 # 本地临时构建缓存与调试日志
 minigame/.tmp/
+.tmp-filing/
 *.log
