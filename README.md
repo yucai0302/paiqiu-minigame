@@ -1,4 +1,4 @@
-# Q版排球 · 微信小游戏
+# 弹弹排球 · 微信小游戏
 
 **中文** | [English](#english)
 
@@ -128,7 +128,7 @@ MIT
 
 <a id="english"></a>
 
-# Q Volleyball — WeChat Mini Game
+# Dandan Volley — WeChat Mini Game
 
 **中文** | [English](#english)
 

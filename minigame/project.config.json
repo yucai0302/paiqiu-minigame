@@ -1,6 +1,6 @@
 {
-  "description": "Q版排球微信小游戏",
-  "projectname": "paiqiu-minigame",
+  "description": "弹弹排球微信小游戏",
+  "projectname": "dandan-volley",
   "appid": "wx9d00ff565d37bf6b",
   "compileType": "game",
   "libVersion": "3.9.0",
