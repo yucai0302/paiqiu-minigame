@@ -13,7 +13,10 @@ interface Btn {
   id: BtnId;
   x: number;
   y: number;
+  /** 视觉半径（只影响绘制与间距） */
   r: number;
+  /** 命中半径（可独立放大，但不与相邻键重叠） */
+  hitR: number;
   sprite: THREE.Sprite;
   size: number;
   texNormal: THREE.Texture;
@@ -215,12 +218,18 @@ function iconSprint(ctx: CanvasRenderingContext2D): void {
   ctx.stroke();
 }
 
+/** 各键的"设计基准半径"，图标与文字按 r/基准 等比放大，避免大键里图标偏小 */
+const BASE_R: Record<BtnId, number> = { hit: 33, jump: 26, block: 26, sprint: 23 };
+
 /** 按键贴图：烘焙投影 + 上浅下深渐变 + 白描边 + 顶部高光 + 图标 + 文字 */
 function buttonTexture(id: BtnId, r: number, pressed: boolean): { tex: THREE.Texture; size: number } {
   const { color, label } = BTN_STYLE[id];
   const size = Math.ceil(r * 2 + 24);
   const c = size / 2;
-  const { canvas, ctx } = createUiCanvas(size, size, 2);
+  // UI 贴图跟随设备 DPR 烘焙（DPR3 下 1 贴图像素 = 1 设备像素），文字边缘不再二次放大
+  const { canvas, ctx } = createUiCanvas(size, size);
+  // 图标/文字随按键尺寸等比放大，视觉上仍然"按键变大、图标也变大"
+  const k = r / BASE_R[id];
 
   // 投影
   ctx.beginPath();
@@ -253,6 +262,7 @@ function buttonTexture(id: BtnId, r: number, pressed: boolean): { tex: THREE.Tex
   // 图标
   ctx.save();
   ctx.translate(c, c - r * 0.14);
+  ctx.scale(k, k);
   if (id === 'hit') iconBall(ctx, color);
   else if (id === 'jump') iconJump(ctx);
   else if (id === 'block') iconBlock(ctx);
@@ -260,11 +270,11 @@ function buttonTexture(id: BtnId, r: number, pressed: boolean): { tex: THREE.Tex
   ctx.restore();
 
   // 功能文字（图标 + 文字双通道识别）
-  ctx.font = `800 11px ${FONT}`;
+  ctx.font = `800 ${(11 * k).toFixed(1)}px ${FONT}`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.lineJoin = 'round';
-  ctx.lineWidth = 3;
+  ctx.lineWidth = 3 * k;
   ctx.strokeStyle = 'rgba(10,20,32,0.35)';
   ctx.strokeText(label, c, c + r * 0.52);
   ctx.fillStyle = '#ffffff';
@@ -310,8 +320,10 @@ export class Gamepad {
     const bg = uiSprite(bgTex, W, padH, W / 2, H - (this.y0 + padH / 2), 0);
     this.root.add(bg);
 
-    const safe = Math.min(this.platform.safeBottom, 30);
-    this.joyHome = { x: 76, y: this.y0 + (padH - safe) * 0.52 };
+    const safe = Math.min(this.platform.safeBottom, 34);
+    // 摇杆视觉不动：仍按"原 1/6 手柄带"的绝对位置摆放，避免右侧改版把左手位带着上移
+    const legacyPadH = Math.max(124, H / 6);
+    this.joyHome = { x: 76, y: H - legacyPadH + (legacyPadH - safe) * 0.52 };
     this.joyOrigin = { ...this.joyHome };
 
     const base = joyBaseTexture();
@@ -322,24 +334,25 @@ export class Gamepad {
     this.joyKnob = uiSprite(knob.tex, knob.size, knob.size, this.joyHome.x, H - this.joyHome.y, 4);
     this.root.add(this.joyBase, this.joyKnob);
 
-    const contentH = padH - 8 - safe;
-    const rowTop = this.y0 + contentH * 0.28;
-    const rowBottom = this.y0 + contentH * 0.74;
-    const colRight = W - 66;
-    const colLeft = W - 140;
+    // ---- 右侧四键：沿右手拇指"从右下向内上"的弧线排布（对角错落，非 2×2 方格）----
+    // 底边 = 屏幕底部向内 6px 且避开 home indicator；顶边 = 3D 视口下沿，绝不覆盖球场主体。
+    // 尺寸 + 12% 后，四键之间（含命中区）仍保留 ≥2px 净缝，见 docs/ui-clarity-gamepad.md 数值表。
+    const bottomLimit = H - safe - 6;
+    const yBottom = bottomLimit - 37; // 主键击球中心
+    const yTop = yBottom - 66; // 上方两键中心（与主键错开 42px 横向，避免正上正下贴合）
 
-    // 主键击球最大，其余按键拉开大小区分重要度
-    this.addButton('hit', colRight, rowBottom, 33);
-    this.addButton('jump', colRight, rowTop, 26);
-    this.addButton('block', colLeft, rowBottom, 26);
-    this.addButton('sprint', colLeft, rowTop, 23);
+    // 主键最大且最靠右下（拇指自然落点），其余按使用频率递减
+    this.addButton('hit', W - 52, yBottom, 37, 6);
+    this.addButton('jump', W - 94, yTop, 29, 4);
+    this.addButton('block', W - 140, yBottom + 2, 29, 4);
+    this.addButton('sprint', W - 160, yTop + 2, 26, 4);
 
     this.ui.scene.add(this.root);
     this.root.visible = false;
     this.updateVisual();
   }
 
-  private addButton(id: BtnId, x: number, y: number, r: number): void {
+  private addButton(id: BtnId, x: number, y: number, r: number, hitPad: number): void {
     const normal = buttonTexture(id, r, false);
     const pressed = buttonTexture(id, r, true);
     const sprite = uiSprite(normal.tex, normal.size, normal.size, x, this.H - y, 4);
@@ -349,6 +362,7 @@ export class Gamepad {
       x,
       y,
       r,
+      hitR: r + hitPad,
       sprite,
       size: normal.size,
       texNormal: normal.tex,
@@ -458,10 +472,11 @@ export class Gamepad {
   }
 
   private hitButton(x: number, y: number): Btn | null {
+    // 命中区比视觉大一圈（拇指容错）；各键命中区之间留有净缝，且击球键排在最前，优先级最高
     for (const b of this.btns) {
       const dx = x - b.x;
       const dy = y - b.y;
-      if (dx * dx + dy * dy <= b.r * b.r) return b;
+      if (dx * dx + dy * dy <= b.hitR * b.hitR) return b;
     }
     return null;
   }
@@ -516,7 +531,9 @@ export class Gamepad {
       const mat = b.sprite.material as THREE.SpriteMaterial;
       mat.map = down ? b.texPressed : b.texNormal;
       mat.needsUpdate = true;
-      b.sprite.scale.setScalar(b.size * (down ? 0.9 : 1));
+      // 按压反馈：收缩 + 轻微下沉（比只换颜色更明确）
+      b.sprite.scale.setScalar(b.size * (down ? 0.86 : 1));
+      b.sprite.position.y = this.H - b.y - (down ? 2 : 0);
     }
   }
 }

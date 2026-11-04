@@ -6,6 +6,7 @@ import { cloudAvailable, CloudRoomClient } from './net/cloud';
 import { DEFAULT_SERVER_URL, RoomClient } from './net/room';
 import type { NetClient, RoomEvent, StartCfg } from './net/room';
 import { DEBUG, envInfo, mark, recordError, setDebug, trace } from './platform/diag';
+import { nextLowerDpr } from './platform/resolution';
 import type { Platform } from './platform/types';
 import { SceneView } from './render/scene';
 import type { Skill } from './sim/ai';
@@ -54,6 +55,10 @@ export class App {
   private fpsAcc = 0;
   private fpsFrames = 0;
   private fps = 0;
+  /** 当前主画布 DPR（自适应降档会就地改小，不改贴图） */
+  private renderDpr: number;
+  private lowFpsStreak = 0;
+  private dprCooldownUntil = 0;
   private framePending = false;
   private seq = 0;
   /** rAF 连续超时后永久切到 setTimeout 驱动（小游戏里最稳的兜底） */
@@ -92,7 +97,11 @@ export class App {
 
   constructor(platform: Platform) {
     this.platform = platform;
-    this.padH = Math.max(124, Math.round(platform.height / 6));
+    // 底部手柄带：1/6 屏高 + home indicator 安全区，右侧四键放大后
+    // 必须整条落在安全区内，因此把安全区高度并入手柄带（3D 视口相应少这几像素）
+    this.padH =
+      Math.max(146, Math.round(platform.height / 6) + 5) + Math.min(platform.safeBottom, 34);
+    this.renderDpr = platform.dpr;
     mark('boot');
 
     this.scene = new SceneView(
@@ -324,7 +333,7 @@ export class App {
   private shareInvite(): void {
     const rid = this.net?.roomId;
     if (!rid) return;
-    this.platform.shareAppMessage('来和我组队打排球！2v2 走起', `room=${rid}`);
+    this.platform.shareAppMessage('弹弹排球｜来和我组队打排球！2v2 走起', `room=${rid}`);
     this.screens.toast('已发起分享（浏览器环境已复制邀请链接）');
   }
 
@@ -820,6 +829,7 @@ export class App {
       this.fps = Math.round(this.fpsFrames / this.fpsAcc);
       this.fpsAcc = 0;
       this.fpsFrames = 0;
+      this.maybeDegradeDpr();
     }
 
     try {
@@ -908,6 +918,37 @@ export class App {
       if (v) trace('debug-on');
     } catch (e) {
       recordError('debug-panel', e);
+    }
+  }
+
+  /**
+   * 低端机降档：连续 3 秒 <45fps 且已进入对局 4 秒后，主画布 DPR 降一档（3→2.5→2）。
+   * 只降不升，且有 8 秒冷却，避免在帧率边缘来回抖动；
+   * 2D UI 贴图仍保持启动期的清晰度，不受影响。
+   */
+  private maybeDegradeDpr(): void {
+    if (this.state !== 'playing') {
+      this.lowFpsStreak = 0;
+      return;
+    }
+    if (this.platform.now() - this.playStartedAt < 4000) return;
+    if (this.platform.now() < this.dprCooldownUntil) return;
+    if (this.fps < 45) this.lowFpsStreak++;
+    else this.lowFpsStreak = 0;
+    if (this.lowFpsStreak < 3) return;
+
+    const next = nextLowerDpr(this.renderDpr);
+    this.lowFpsStreak = 0;
+    if (!next) return;
+    try {
+      if (this.scene.setPixelRatio(next)) {
+        this.renderDpr = next;
+        this.dprCooldownUntil = this.platform.now() + 8000;
+        trace('dpr:degrade', `fps=${this.fps} dpr=${next}`);
+        mark('dpr:degrade');
+      }
+    } catch (e) {
+      recordError('dpr', e);
     }
   }
 
