@@ -112,6 +112,27 @@ const browsers = [];
   await shot(A, 'online-match-score-host');
   await shot(B, 'online-match-score-guest');
 
+  // ---------------- 发球者双端一致（需求二：快照携带发球者 id） ----------------
+  const serveSeen = [];
+  for (let i = 0; i < 3; i++) {
+    await A.waitForFunction(() => window.__paiqiu.world.phase === 'serve', { timeout: 150000 });
+    const svA = await A.evaluate(() =>
+      JSON.stringify({ sv: window.__paiqiu.world.serverId, st: window.__paiqiu.world.servingTeam }),
+    );
+    await sleep(1200); // 等客机收到快照
+    const svB = await B.evaluate(() =>
+      JSON.stringify({ sv: window.__paiqiu.world.serverId, st: window.__paiqiu.world.servingTeam }),
+    );
+    const ok = svA === svB;
+    serveSeen.push({ host: svA, guest: svB, ok });
+    console.log(`serve#${i + 1} host=${svA} guest=${svB} → ${ok ? 'MATCH' : 'MISMATCH'}`);
+    // 等这一回合真正发出去，下一次循环才是“下一轮发球”
+    await A.waitForFunction(() => window.__paiqiu.world.phase !== 'serve', { timeout: 150000 });
+  }
+  console.log('serve samples:', JSON.stringify(serveSeen));
+  await shot(A, 'online-serve-rotation-host');
+  await shot(B, 'online-serve-rotation-guest');
+
   // ---------------- 中途断线 → AI 接管 → 自动重连 ----------------
   await B.evaluate(() => window.__paiqiu.net && window.__paiqiu.net.tx && window.__paiqiu.net.tx.ws.close());
   console.log('guest socket killed');

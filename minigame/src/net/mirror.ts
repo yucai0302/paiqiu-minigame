@@ -242,6 +242,8 @@ export class RemoteInputBuf {
     this.latest.hit = false;
     this.latest.jump = false;
     this.latest.block = false;
+    this.latest.spike = false;
+    this.latest.setup = false;
     return out;
   }
 }

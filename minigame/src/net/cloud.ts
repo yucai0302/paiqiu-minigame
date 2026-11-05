@@ -120,7 +120,8 @@ export class CloudRoomClient implements NetClient {
 
   sendInput(inp: ControlInput): void {
     // 聚合：边沿立即刷库，保持量按节流窗口刷（好友每帧调用，这里压到 ~10Hz）
-    const flushNow = this.inputAgg === null || inp.hit || inp.jump || inp.block;
+    const flushNow =
+      this.inputAgg === null || inp.hit || inp.jump || inp.block || inp.spike || inp.setup;
     if (this.inputAgg === null) {
       this.inputAgg = { ...inp };
     } else {
@@ -128,6 +129,8 @@ export class CloudRoomClient implements NetClient {
       a.hit = a.hit || inp.hit;
       a.jump = a.jump || inp.jump;
       a.block = a.block || inp.block;
+      a.spike = a.spike || inp.spike;
+      a.setup = a.setup || inp.setup;
       a.sprint = inp.sprint;
       a.hitHeld = inp.hitHeld;
       a.blockHeld = inp.blockHeld;
