@@ -1,6 +1,6 @@
 import { BALL, COURT } from './config';
 import type { Vec3 } from '../core/math';
-import type { BallEvent, BlockerBox, TeamId } from './types';
+import type { BallEvent, BlockerBox, HitKind, TeamId } from './types';
 
 /** 抛物线求解：给定飞行时间反推初速度（用于扣球 / 平快球） */
 export function solveVelocity(from: Vec3, to: Vec3, time: number, gravity = BALL.gravity): Vec3 {
@@ -36,6 +36,8 @@ export class Ball {
   dead = false;
   heldBy: number | null = null;
   lastHitTeam: TeamId | null = null;
+  /** 最近一次触球的类型（过网后仍然保留，人机靠它判断这球是不是扣球） */
+  lastKind: HitKind | null = null;
   lastHitterId: number | null = null;
   landX = 0;
   landZ = 0;
@@ -48,6 +50,7 @@ export class Ball {
     this.dead = false;
     this.heldBy = null;
     this.lastHitTeam = null;
+    this.lastKind = null;
     this.lastHitterId = null;
     this.landX = 0;
     this.landZ = 0;
@@ -75,20 +78,40 @@ export class Ball {
       const cx = this.prev.x + (this.pos.x - this.prev.x) * t;
       const cy = this.prev.y + (this.pos.y - this.prev.y) * t;
 
-      if (Math.abs(cx) <= COURT.netHalfWidth && cy <= COURT.netHeight + 0.05) {
+      if (Math.abs(cx) <= COURT.netHalfWidth) {
+        // 拦网判定：以拦网人手掌/身前的“竖直拦截面”为准（水平距离 + 高度区间 + 正在拦网的时间窗），
+        // 与球的过网高度无关；普通触网仍按网高判定。只拦对面的球（不能拦自家队友的球）。
         const blocker = blockers.find(
-          (b) => Math.abs(cx - b.x) <= b.halfW && cy >= b.minY && cy <= b.maxY,
+          (b) =>
+            b.team !== this.lastHitTeam &&
+            Math.abs(cx - b.x) <= b.halfW &&
+            cy >= b.minY &&
+            cy <= b.maxY,
         );
-        this.pos.z = prevZ;
         if (blocker) {
+          this.pos.z = prevZ;
+          // 球被挡回对方半场：反向 + 减速下坠；命中手掌边缘时带向场外（打手出界）
+          const edge = Math.abs(cx - blocker.x) / Math.max(0.01, blocker.halfW);
           this.vel.z = -this.vel.z * 0.55;
           this.vel.x *= 0.55;
-          this.vel.y = Math.min(this.vel.y, -1.4);
+          if (edge > 0.8) {
+            const side = Math.sign(cx - blocker.x) || 1;
+            this.vel.x = side * Math.max(2.6, Math.abs(this.vel.x) * 1.8);
+            this.vel.z *= 0.9;
+            this.vel.y = Math.min(this.vel.y, -0.5);
+          } else {
+            this.vel.y = Math.min(this.vel.y, -1.4);
+          }
+          this.lastHitTeam = blocker.team;
+          this.lastHitterId = blocker.playerId;
           emit({ type: 'block', playerId: blocker.playerId, x: cx, y: cy, z: 0 });
-        } else {
+        } else if (cy <= COURT.netHeight + 0.05) {
+          this.pos.z = prevZ;
           this.vel.z *= -0.45;
           this.vel.y *= 0.5;
           emit({ type: 'net', x: cx, y: cy, z: 0 });
+        } else {
+          emit({ type: 'cross', x: cx, y: cy, z: 0 });
         }
       } else {
         emit({ type: 'cross', x: cx, y: cy, z: 0 });

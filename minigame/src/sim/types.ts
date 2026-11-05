@@ -25,6 +25,10 @@ export interface ControlInput {
   blockHeld: boolean;
   /** 扣球落点（世界 x），仅人机使用；真人由移动方向决定 */
   aimX?: number;
+  /** 网前「扣杀」：一次点击自动起跳 + 扣球（由 World 校验时机，不合法则忽略） */
+  spike?: boolean;
+  /** 网前「二传」：把球回传给队友（无队友时兜底为普通击球） */
+  setup?: boolean;
 }
 
 export function emptyInput(): ControlInput {
@@ -37,6 +41,8 @@ export function emptyInput(): ControlInput {
     hitHeld: false,
     block: false,
     blockHeld: false,
+    spike: false,
+    setup: false,
   };
 }
 
@@ -48,6 +54,8 @@ export interface Player {
   slot: number;
   /** 移动速度倍率（人机难度） */
   speedScale: number;
+  /** 扣球球速倍率（人机难度，1 = 真人速度） */
+  attackScale: number;
   /** y 为离地高度（跳跃时 > 0） */
   pos: Vec3;
   prev: Vec3;
@@ -63,6 +71,13 @@ export interface Player {
   blockCd: number;
   /** 击球输入缓冲（秒），按下 J 后短时间内进入判定范围也能生效 */
   hitBuffer: number;
+  /** 网前「扣杀」意图缓冲：自动起跳并在窗口内出手 */
+  spikeBuffer: number;
+  /** 网前「二传」意图缓冲 */
+  setupBuffer: number;
+  /** 按下拦网时的自动微对齐（横向速度 / 剩余时间），幅度很小，不是瞬移 */
+  alignVx: number;
+  alignTimer: number;
   stun: number;
   charge: number;
   /** 发球瞄准点（世界 x），蓄力时用左右键微调 */
@@ -84,13 +99,17 @@ export interface GameEvents {
     combo: number;
     kind: HitKind;
     perfect: boolean;
+    /** 自动接扣杀触发（未按键），用于统计与调试 */
+    auto?: boolean;
     x: number;
     y: number;
     z: number;
   };
   block: { playerId: number; x: number; y: number; z: number };
+  /** 网前「二传」兜底触发（无队友 / 触球用尽 / 够不着），用于统计与调试 */
+  setFallback: { playerId: number; reason: 'noMate' | 'touchesExhausted' | 'noReach' };
   net: { x: number; y: number; z: number };
-  jump: { playerId: number };
+  jump: { playerId: number; block?: boolean };
   dive: { playerId: number };
   /** 空挥（按了击球但没碰到球） */
   swing: { playerId: number };
@@ -130,6 +149,7 @@ export type BallEvent = BallEventNet | BallEventBlock | BallEventCross | BallEve
 
 export interface BlockerBox {
   playerId: number;
+  team: TeamId;
   x: number;
   halfW: number;
   minY: number;

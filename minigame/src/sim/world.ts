@@ -4,8 +4,8 @@ import type { Rng } from '../core/math';
 import type { Vec3 } from '../core/math';
 import { BALL, COURT, MATCH, PLAYER } from './config';
 import { Ball, lobVelocity, solveVelocity } from './ball';
-import { AIBrain, SKILLS } from './ai';
-import type { Skill } from './ai';
+import { aiProfile, AIBrain } from './ai';
+import type { AiRole, Skill } from './ai';
 import { slotPosition } from './formation';
 import { emptyInput } from './types';
 import type {
@@ -31,6 +31,10 @@ export interface WorldOptions {
   localPlayerId?: number;
   /** 联机锁步种子；不传则每局随机 */
   seed?: number;
+  /** 自动接扣杀开关（默认开；bench 用来做分组对比） */
+  autoDig?: boolean;
+  /** 前后排分工开关（默认开；bench 用来做分组对比） */
+  frontBack?: boolean;
 }
 
 const HOME_AI_NAMES = ['阿洛', '小北', '豆豆', '球球'];
@@ -67,7 +71,37 @@ export class World {
   ];
   servingTeam: TeamId = 0;
   serverId = 0;
+  /** 每队发球轮转索引：每次该队开始发球时取当前索引，然后 +1（两人轮流） */
+  serveIndex: [number, number] = [0, 0];
+  /** 网前「二传」做出的一拍快攻：指定由谁直接扣（命中后清空） */
+  quickAttack: [number | null, number | null] = [null, null];
+  /** 拦网面水平半宽（手掌+前臂，0.78 旧值 / 0.92 现值） */
+  blockHalfW = 0.92;
+  /** 按下拦网时朝预测过网点的自动微对齐上限（米，0 = 关闭） */
+  blockAlignMax = 0.45;
+  /**
+   * 贴网补跳：过网窗口内才按拦网键时，起跳更快（1.22 倍上升速度）。
+   * 实测（.tmp/block-after.json vs block-after-nolate.json）：0.25s 提前量处 6/24 次
+   * 因上升过快把拦网手抬过球、反而漏球（75% → 100%）；0.1~0.55s 区间无任何增益。
+   * 结论：无收益且有副作用，默认关闭，字段保留用于 A/B。
+   */
+  blockFastRise = false;
+
+  /** 自动接扣杀触发次数（统计用） */
+  autoDigs = 0;
+  /** 网前「二传」兜底计数：按原因分组（统计/调参用） */
+  setFallbacks: Record<'noMate' | 'touchesExhausted' | 'noReach', number> = {
+    noMate: 0,
+    touchesExhausted: 0,
+    noReach: 0,
+  };
+  /** 自动接扣杀是否启用（bench 分组对比用） */
+  private readonly autoDigOn: boolean;
+  /** 前后排分工是否启用（bench 分组对比用） */
+  private readonly frontBackOn: boolean;
   matchWinner: TeamId | null = null;
+  /** 每队最近一次扣球的时间 */
+  lastAttackTime: [number, number] = [-10, -10];
   /** 慢动作剩余时间（真实时间，由外层递减） */
   slowmoTimer = 0;
   time = 0;
@@ -89,6 +123,8 @@ export class World {
     this.roster = opts.names ?? [];
     this.skill = opts.skill;
     this.rng = createRng(opts.seed ?? Date.now() % 2147483647);
+    this.autoDigOn = opts.autoDig !== false;
+    this.frontBackOn = opts.frontBack !== false;
     this.createPlayers(opts.skill, opts.humanName ?? '你');
     this.resetPlayers();
   }
@@ -100,13 +136,15 @@ export class World {
     const p = this.players.find((q) => q.id === id);
     if (!p || p.isHuman === human) return;
     p.isHuman = human;
-    p.speedScale = human ? 1 : SKILLS[this.skill].moveScale;
+    const prof = aiProfile(this.skill, this.roleFor(p.team));
+    p.speedScale = human ? 1 : prof.moveScale;
+    p.attackScale = human ? 1 : prof.attackScale;
     if (human) {
       this.brains.delete(id);
       p.charge = 0;
       p.hitBuffer = 0;
     } else if (!this.brains.has(id)) {
-      this.brains.set(id, new AIBrain(this.skill, this.rng));
+      this.brains.set(id, new AIBrain(this.skill, this.rng, this.roleFor(p.team), this.frontBackOn));
     }
   }
 
@@ -119,7 +157,9 @@ export class World {
     this.suddenDeath = false;
     this.matchWinner = null;
     this.servingTeam = this.humanTeam;
+    this.serveIndex = [0, 0];
     this.lastHitterByTeam = [null, null];
+    this.lastAttackTime = [-10, -10];
     this.slowmoTimer = 0;
     for (const p of this.players) {
       p.stats.points = 0;
@@ -177,15 +217,125 @@ export class World {
     return null;
   }
 
+  /** 球飞到网上方的预计过网点（用于拦网站位与起跳时机） */
+  predictNetCrossing(): { x: number; y: number; t: number } | null {
+    const b = this.ball;
+    if (!b.live || b.dead || b.heldBy !== null) return null;
+    if (Math.abs(b.vel.z) < 0.3) return null;
+    if (Math.sign(b.vel.z) === Math.sign(b.pos.z) && Math.abs(b.pos.z) > 0.05) return null;
+    let px = b.pos.x;
+    let py = b.pos.y;
+    let pz = b.pos.z;
+    let vx = b.vel.x;
+    let vy = b.vel.y;
+    let vz = b.vel.z;
+    const h = 1 / 60;
+    for (let t = h; t < 1.6; t += h) {
+      const nx = px + vx * h;
+      const ny = py + vy * h;
+      const nz = pz + vz * h;
+      if ((pz > 0 && nz <= 0) || (pz < 0 && nz >= 0)) {
+        const k = pz / (pz - nz);
+        return { x: px + (nx - px) * k, y: py + (ny - py) * k, t };
+      }
+      px = nx;
+      py = ny;
+      pz = nz;
+      vy -= BALL.gravity * h;
+      vx *= Math.max(0, 1 - BALL.drag * h);
+      vz *= Math.max(0, 1 - BALL.drag * h);
+    }
+    return null;
+  }
+
+  ballTimeToHeight(y: number): number | null {
+    const b = this.ball;
+    if (!b.live || b.dead || b.heldBy !== null) return null;
+    if (b.pos.y <= y && b.vel.y <= 0) return 0;
+    let py = b.pos.y;
+    let vy = b.vel.y;
+    const h = 1 / 120;
+    for (let t = h; t < 2.4; t += h) {
+      vy -= BALL.gravity * h;
+      py += vy * h;
+      if (vy < 0 && py <= y) return t;
+    }
+    return null;
+  }
+
+  /**
+   * 扣球判定（比常规触球宽松）：第三拍 + 空中 + 球在头顶合适高度 + 本人没有连击。
+   * 之前要求“球必须高过胸口 1.5m 且 3D 距离 1.6m 内”，窗口只有 0.1 秒左右，
+   * 真人几乎打不出扣球；这里把高度和水平距离拆开，窗口放宽到约 0.45 秒。
+   */
+  attackWindow(p: Player): boolean {
+    const b = this.ball;
+    if (!b.live || b.dead || b.heldBy !== null) return false;
+    if (this.phase !== 'rally') return false;
+    // 网前「二传」把球做给队友后，队友这一拍可以直接起跳快扣（否则还要再垫一拍，等于没做成）
+    const quick = this.quickAttack[p.team] === p.id;
+    if (!quick) {
+      if (this.touches[p.team] < 2) return false;
+      if (p.grounded) return false;
+    }
+    if (this.touches[p.team] >= 3) return false;
+    if (this.lastHitterByTeam[p.team] === p.id) return false;
+    const ownSide = p.team === 0 ? b.pos.z > -0.4 : b.pos.z < 0.4;
+    if (!ownSide) return false;
+    const dxz = Math.hypot(b.pos.x - p.pos.x, b.pos.z - p.pos.z);
+    if (dxz > PLAYER.spikeReachXZ) return false;
+    // 高度带相对地面、不随跳跃抬升（否则“跳得越高越打不到球”）
+    return b.pos.y >= PLAYER.spikeMinY && b.pos.y <= PLAYER.spikeMaxY;
+  }
+
   /** 进攻区：二传把球送到这里，扣球的人从这里起跳 */
   attackZone(team: TeamId): { x: number; z: number } {
     const plan = this.attackPlan[team];
+    const attacker =
+      plan.attackerId !== null ? this.players.find((p) => p.id === plan.attackerId) : undefined;
     const setter =
       plan.setterId !== null ? this.players.find((p) => p.id === plan.setterId) : undefined;
+    const ref = attacker ?? setter;
     const sign = team === 0 ? 1 : -1;
     return {
-      x: clamp((setter ? setter.pos.x : 0) * 0.8, -2.6, 2.6),
+      x: clamp((ref ? ref.pos.x : 0) * 0.8, -2.6, 2.6),
       z: sign * 1.75,
+    };
+  }
+
+  /**
+   * 二传落点：落在主攻的“冲刺路径”上，而不是固定坐标。
+   * 理想落点 = 主攻竖线、离网 1.9m 的进攻点；若二传滞空时间内他跑不到，
+   * 就把落点沿他的冲刺方向往前收（他一定能在球落地前赶到并起跳）。
+   */
+  setAim(
+    p: Player,
+    attacker: Player | undefined,
+    aimX: number | undefined,
+  ): { x: number; z: number; apex: number } {
+    const sign = p.team === 0 ? 1 : -1;
+    const zone = this.attackZone(p.team);
+    if (!attacker) {
+      return { x: clamp(aimX ?? zone.x, -3.2, 3.2), z: zone.z, apex: 4.9 };
+    }
+    const az = Math.abs(attacker.pos.z);
+    // 主攻在深后场时把球吊得更高，多给他 0.2~0.3s 冲刺时间
+    const apex = az > 3.6 ? 5.4 : 4.9;
+    // 与 lobVelocity 一致的滞空时间解析解
+    const fromY = this.ball.pos.y;
+    const tUp = Math.sqrt((2 * Math.max(0.1, apex - fromY)) / BALL.gravity);
+    const tDown = Math.sqrt((2 * Math.max(0.01, apex - BALL.radius)) / BALL.gravity);
+    const flight = tUp + tDown;
+    // 保守估计主攻跑动的平均水平速度（真人 6m/s，冲刺 11m/s；取 6.2 兜底）
+    const reach = 6.2 * flight * 0.95;
+    const nodeX = clamp(aimX ?? attacker.pos.x * 0.92, -3.2, 3.2);
+    const nodeZ = 1.9;
+    const dist = Math.hypot(nodeX - attacker.pos.x, nodeZ - az);
+    const k = dist <= 1e-3 ? 1 : Math.min(1, reach / dist);
+    return {
+      x: clamp(attacker.pos.x + (nodeX - attacker.pos.x) * k, -3.2, 3.2),
+      z: sign * (az + (nodeZ - az) * k),
+      apex,
     };
   }
 
@@ -230,6 +380,10 @@ export class World {
 
   // ---------------------------------------------------------------- 构建
 
+  private roleFor(team: TeamId): AiRole {
+    return team === this.humanTeam ? 'ally' : 'foe';
+  }
+
   private createPlayers(skill: Skill, humanName: string): void {
     const n = this.teamSize;
     for (let i = 0; i < n; i++) {
@@ -267,14 +421,17 @@ export class World {
     name: string;
     skill: Skill;
   }): Player {
-    if (!o.human) this.brains.set(o.id, new AIBrain(o.skill, this.rng));
+    const role = this.roleFor(o.team);
+    const prof = aiProfile(o.skill, role);
+    if (!o.human) this.brains.set(o.id, new AIBrain(o.skill, this.rng, role, this.frontBackOn));
     return {
       id: o.id,
       name: o.name,
       team: o.team,
       isHuman: o.human,
       slot: o.slot,
-      speedScale: o.human ? 1 : SKILLS[o.skill].moveScale,
+      speedScale: o.human ? 1 : prof.moveScale,
+      attackScale: o.human ? 1 : prof.attackScale,
       pos: { x: 0, y: 0, z: 0 },
       prev: { x: 0, y: 0, z: 0 },
       vel: { x: 0, y: 0, z: 0 },
@@ -288,6 +445,10 @@ export class World {
       hitCd: 0,
       blockCd: 0,
       hitBuffer: 0,
+      spikeBuffer: 0,
+      setupBuffer: 0,
+      alignVx: 0,
+      alignTimer: 0,
       stun: 0,
       charge: 0,
       serveAim: 0,
@@ -310,6 +471,10 @@ export class World {
       p.sprintCd = 0;
       p.stun = 0;
       p.hitBuffer = 0;
+      p.spikeBuffer = 0;
+      p.setupBuffer = 0;
+      p.alignVx = 0;
+      p.alignTimer = 0;
       p.charge = 0;
       p.anim = 'idle';
       p.animTimer = 0;
@@ -387,7 +552,7 @@ export class World {
       if (inp.jump && p.grounded) {
         p.vel.y = PLAYER.jumpVelocity;
         p.grounded = false;
-        this.events.emit('jump', { playerId: p.id });
+        this.events.emit('jump', { playerId: p.id, block: false });
       }
     } else {
       p.moving = false;
@@ -403,6 +568,13 @@ export class World {
     this.clampToCourt(p);
     this.stepVertical(p, dt);
 
+    // 按下拦网时的自动微对齐：朝预测过网点侧移一小步（≤0.45m / 0.2s），不是瞬移
+    if (p.alignTimer > 0) {
+      p.alignTimer = Math.max(0, p.alignTimer - dt);
+      p.pos.x += p.alignVx * dt;
+      this.clampToCourt(p);
+    }
+
     // 网前按 K 自动起跳，起跳后保持张臂拦网
     if (
       this.phase === 'rally' &&
@@ -411,10 +583,19 @@ export class World {
       p.stun <= 0 &&
       Math.abs(p.pos.z) < 1.8
     ) {
-      p.vel.y = PLAYER.jumpVelocity;
+      // 贴网补跳：按下时球已经在过网窗口内（≤0.25s），这次起跳更快，让手能及时到网上沿
+      const cross = this.predictNetCrossing();
+      const lateHop = this.blockFastRise && !!cross && cross.t <= 0.25;
+      p.vel.y = PLAYER.jumpVelocity * (lateHop ? 1.22 : 1);
       p.grounded = false;
       p.blockCd = 0.7;
-      this.events.emit('jump', { playerId: p.id });
+      // 横向微对齐：按下瞬间按预测过网点修正 ≤0.45m（超出这个范围说明站位就错了，不救）
+      if (cross && p.isHuman && this.blockAlignMax > 0 && Math.abs(cross.x - p.pos.x) <= 1.3) {
+        const dx = clamp(cross.x - p.pos.x, -this.blockAlignMax, this.blockAlignMax);
+        p.alignVx = dx / 0.2;
+        p.alignTimer = 0.2;
+      }
+      this.events.emit('jump', { playerId: p.id, block: true });
     }
     if (inp.block && Math.abs(p.pos.z) < 1.8) p.blockCd = Math.max(p.blockCd, 0.7);
     p.blocking =
@@ -439,6 +620,28 @@ export class World {
         }
       }
     }
+
+    // 手动击球键优先；没按键时，对面重扣进入己方界内且人已跑到位 → 自动起球。
+    // 正在拦网 / 按了二传或扣杀时不抢球：否则玩家跳起来拦网，球还没过网就被“自动起球”
+    // 摸掉一拍，拦网永远碰不到球（实机“一直拦不到”的主要原因）。
+    if (
+      this.autoDigOn &&
+      this.phase === 'rally' &&
+      !inp.hit &&
+      !inp.hitHeld &&
+      !inp.block &&
+      !inp.blockHeld &&
+      !inp.setup &&
+      !inp.spike &&
+      !p.blocking &&
+      p.hitBuffer <= 0 &&
+      p.setupBuffer <= 0 &&
+      p.spikeBuffer <= 0
+    ) {
+      this.tryAutoDig(p, inp);
+    }
+
+    if (this.phase === 'rally') this.stepNetControls(p, inp, dt);
 
     if (this.phase === 'serve' && p.id === this.serverId) {
       // 轻点也能发球：按下即给一个最小蓄力
@@ -483,8 +686,30 @@ export class World {
 
   // ---------------------------------------------------------------- 击球
 
-  private tryHit(p: Player, inp: ControlInput): boolean {
-    if (!this.ballInReach(p)) return false;
+  /**
+   * 一传时决定本轮主攻（决定二传与扣球的分工）。判据只看位置，不看“是否在移动”：
+   * 真人摇杆一直在微动，用移动状态判断会让真人永远被判成“在跑动”，从而永远拿不到二传球。
+   * - 真人离进攻区 ≤6.2m（半个球场，默认站位约 4.1m）→ 真人主攻，人机把球做给玩家；
+   * - 真人退到接近底线外 → 人机主攻，真人第二拍做二传（“玩家传球 → AI 扣杀”）。
+   * 双真人或没有真人时，由一传的人自己当主攻。
+   */
+  private preferredAttacker(p: Player): number {
+    const mate = this.players.find((q) => q.team === p.team && q.id !== p.id);
+    if (!mate || !mate.isHuman || p.isHuman) return p.id;
+    const h = mate;
+    const sign = h.team === 0 ? 1 : -1;
+    const zone = { x: clamp(h.pos.x * 0.8, -2.6, 2.6), z: sign * 1.75 };
+    // 阈值为“半个球场”：真人默认站位（离进攻区 ~4.1m）一定判成主攻。
+    // 只有真人退到接近底线外才让 AI 主攻。
+    return dist2D(h.pos.x, h.pos.z, zone.x, zone.z) <= 6.2 ? h.id : p.id;
+  }
+
+  private tryHit(p: Player, inp: ControlInput, force?: 'setup' | 'auto' | 'send'): boolean {
+    const attack = force === 'setup' ? false : this.attackWindow(p);
+    if (!attack && !this.ballInReach(p)) {
+      // 自动接扣杀用更宽的“跑到位”范围（球高带 + 水平距离），其余情况仍按胸口 1.75m
+      if (!(force === 'auto' && this.autoDigReach(p))) return false;
+    }
     if (p.hitCd > 0) return false;
     if (this.time - this.lastHitAt < PLAYER.hitGap) return false;
 
@@ -493,17 +718,55 @@ export class World {
     const chestY = p.pos.y + PLAYER.chestHeight;
     const d = Math.hypot(b.pos.x - p.pos.x, b.pos.y - chestY, b.pos.z - p.pos.z);
 
-    const airborne = !p.grounded;
-    const ballAbove = b.pos.y > p.pos.y + 1.5;
     const t = this.touches[p.team];
-    let kind: HitKind = 'pass';
-    if (airborne && ballAbove) kind = 'attack';
-    else if (t === 2) kind = 'send';
-    else if (t === 1) kind = 'set';
-
     const mate = this.players.find((q) => q.team === p.team && q.id !== p.id);
     const from = { x: b.pos.x, y: b.pos.y, z: b.pos.z };
     const targetY = BALL.radius;
+
+    // ---- 本次触球的性质与分工 ----
+    // 第三拍：空中且球在头顶 = 扣球，否则只能处理过网
+    // 第二拍：二传手组织（set）；主攻被迫救场时直接推过网（send），避免自己连打三拍
+    let kind: HitKind;
+    if (force === 'setup') {
+      // 网前「二传」：主动把球吊给队友，队友下一拍主攻扣杀
+      kind = 'set';
+    } else if (force === 'send') {
+      // 兜底处理过网（触球次数用尽 / 无队友）：明确走高吊过网，绝不变成“扣球”
+      kind = 'send';
+    } else if (attack) {
+      kind = 'attack';
+    } else if (t === 2) {
+      kind = 'send';
+    } else if (t === 1) {
+      // 第二拍默认组织进攻（谁传谁当二传，搭档自动成为主攻）；
+      // 只有人机判断“主攻根本赶不上”时才直接推过网兜底
+      const dump = this.brains.get(p.id)?.dump ?? false;
+      kind = dump ? 'send' : 'set';
+    } else {
+      kind = 'pass';
+    }
+
+    if (t === 0) {
+      // 第一拍就定好这轮的“二传”和“主攻”：单人模式优先让真人扣
+      let attackerId = this.preferredAttacker(p);
+      let setterId = p.id;
+      if (force === 'setup' && mate) {
+        attackerId = mate.id;
+      } else if (attackerId === p.id && mate) {
+        let setter: Player | null = null;
+        for (const m of this.players) {
+          if (m.team !== p.team || m.id === p.id) continue;
+          if (!setter || Math.abs(m.pos.z) < Math.abs(setter.pos.z)) setter = m;
+        }
+        setterId = setter ? setter.id : mate.id;
+      }
+      this.attackPlan[p.team] = { setterId, attackerId };
+      // 明确按下「二传」时，队友这一拍直接快扣，不再先垫一下
+      if (force === 'setup' && mate) this.quickAttack[p.team] = mate.id;
+    } else if (t === 1 && kind === 'set') {
+      // 第二拍谁传谁就是二传，搭档自动成为主攻（支持“真人二传 → AI 扣杀”）
+      this.attackPlan[p.team] = { setterId: p.id, attackerId: mate ? mate.id : null };
+    }
 
     if (kind === 'attack') {
       const opps = this.players.filter((q) => q.team !== p.team);
@@ -519,25 +782,52 @@ export class World {
         z: sign * (3.6 + this.rng(0, 2.8)),
       };
       const dist = Math.hypot(target.x - from.x, target.z - from.z);
-      const T = clamp(dist / 18, 0.38, 0.65);
-      b.vel = solveVelocity(from, target, T);
+      // 球速倍率：人机难度越低扣球越慢，真人更容易防起
+      const T = clamp(dist / 18, 0.38, 0.65) / Math.max(0.6, p.attackScale);
+      b.vel = solveVelocity(from, target, Math.max(0.3, T));
+      // 对手会“打手出界/改线”避开拦网手：只在真有拦网人时按概率发生，
+      // 不拦网时不会自动绕过玩家（否则等于白送分）。
+      const prof = p.isHuman ? null : aiProfile(this.skill, this.roleFor(p.team));
+      const blocker = this.players.find(
+        (q) => q.team !== p.team && q.blocking && Math.abs(q.pos.z) < 1.8,
+      );
+      if (blocker && prof && prof.wipeChance > 0 && this.rng(0, 1) < prof.wipeChance) {
+        const side = from.x >= blocker.pos.x ? 1 : -1;
+        const desired = blocker.pos.x + side * 1.0;
+        const tc = Math.abs(from.z) / Math.max(1, Math.abs(b.vel.z));
+        if (tc > 0.01) {
+          b.vel.x += clamp((desired - (from.x + b.vel.x * tc)) / tc, -9, 9);
+        }
+      }
     } else if (kind === 'set') {
-      // 二传：把球送到进攻区，让一传的人上来扣
-      const zone = this.attackZone(p.team);
-      b.vel = lobVelocity(from, { x: zone.x, y: targetY, z: zone.z }, 5.8);
+      // 二传：落点不写死，按“主攻能不能跑到”算在他的冲刺路径上。
+      // 固定点（离网 1.75m）在后场队友身上会变成“传给空气”——球落地时人还在 4m 外。
+      const attacker =
+        this.attackPlan[p.team].attackerId !== null
+          ? this.players.find((q) => q.id === this.attackPlan[p.team].attackerId)
+          : undefined;
+      const aim = this.setAim(p, attacker, inp.aimX);
+      b.vel = lobVelocity(from, { x: aim.x, y: targetY, z: aim.z }, aim.apex);
     } else if (kind === 'send') {
       const aim = inp.aimX ?? clamp(p.pos.x + inp.moveX * 2.6, -3.5, 3.5);
       b.vel = lobVelocity(from, { x: aim, y: targetY, z: sign * (4.4 + this.rng(0, 2.4)) }, 5.2);
-    } else if (mate) {
-      // 一传：垫给队友（二传手），但落点不退出进攻区，保证还能组织进攻
-      const tz = -sign * clamp(Math.abs(mate.pos.z) * 0.9, 1.2, 4.2);
-      b.vel = lobVelocity(
-        from,
-        { x: clamp(mate.pos.x * 0.85, -3, 3), y: targetY, z: tz },
-        5.4,
-      );
     } else {
-      b.vel = lobVelocity(from, { x: p.pos.x * 0.5, y: targetY, z: p.pos.z * 0.7 }, 5.4);
+      // 一传：垫给本轮指定的二传手，落点保持在进攻区内，保证还能组织进攻
+      const setter =
+        this.attackPlan[p.team].setterId !== null
+          ? this.players.find((q) => q.id === this.attackPlan[p.team].setterId)
+          : undefined;
+      const ref = setter ?? mate;
+      if (ref) {
+        const tz = -sign * clamp(Math.abs(ref.pos.z) * 0.9, 1.2, 4.2);
+        b.vel = lobVelocity(
+          from,
+          { x: clamp(ref.pos.x * 0.85, -3, 3), y: targetY, z: tz },
+          5.4,
+        );
+      } else {
+        b.vel = lobVelocity(from, { x: p.pos.x * 0.5, y: targetY, z: p.pos.z * 0.7 }, 5.4);
+      }
     }
 
     const q = clamp(1 - Math.abs(d - 0.55) / 1.05, 0.1, 1);
@@ -546,20 +836,10 @@ export class World {
     const samePlayer = t > 0 && this.lastHitterByTeam[p.team] === p.id;
     if (samePlayer) power = Math.round(power * 0.5);
 
-    // 一传的一瞬间确定这次进攻的分工：垫球的人负责最后扣杀，离网最近的队友负责二传
-    if (t === 0) {
-      let setter: Player | null = null;
-      for (const m of this.players) {
-        if (m.team !== p.team || m.id === p.id) continue;
-        if (!setter || Math.abs(m.pos.z) < Math.abs(setter.pos.z)) setter = m;
-      }
-      this.attackPlan[p.team] = {
-        setterId: setter ? setter.id : p.id,
-        attackerId: p.id,
-      };
-    }
-
+    this.ball.lastKind = kind;
+    if (kind === 'attack') this.lastAttackTime[p.team] = this.time;
     this.touches[p.team] = t + 1;
+    if (kind === 'attack') this.quickAttack[p.team] = null;
     this.lastHitAt = this.time;
     this.lastHitterByTeam[p.team] = p.id;
     b.lastHitTeam = p.team;
@@ -586,10 +866,151 @@ export class World {
       combo: this.touches[p.team],
       kind,
       perfect: q > 0.78,
+      auto: force === 'auto',
       x: b.pos.x,
       y: b.pos.y,
       z: b.pos.z,
     });
+    return true;
+  }
+
+  /**
+   * 自动接扣杀：只在“对方扣杀 / 重扣球进入己方半场”时生效。
+   * 必须同时满足：落点预测在界内、玩家跑到“水平距离 + 球高带”范围内、触球没满、没有连击。
+   * 界外球一律不碰，避免帮对手救球。
+   */
+  private tryAutoDig(p: Player, inp: ControlInput): void {
+    const b = this.ball;
+    if (!b.live || b.dead || b.heldBy !== null) return;
+    if (b.lastKind !== 'attack' || b.lastHitTeam === p.team) return;
+    if (this.touches[p.team] >= 3) return;
+    if (this.lastHitterByTeam[p.team] === p.id) return;
+    // 只碰已经进入己方半场的球：球还在对面半场（含贴网的 -0.4m 容差）时不许自动起球，
+    // 否则会“隔网摸球”，把对手那拍扣球凭空变成我方一传
+    const ownSide = p.team === 0 ? b.pos.z > 0.05 : b.pos.z < -0.05;
+    if (!ownSide) return;
+    const landing = this.predictLanding();
+    if (!landing || !this.landingInBounds(landing, p.team)) return;
+    if (!this.autoDigReach(p)) return;
+    // “跑到位置”才触球：落点必须真的在自己附近，顺手碰一下会把队友的球抢掉
+    const range = this.autoDigRange(p);
+    const mineD = Math.hypot(landing.x - p.pos.x, landing.z - p.pos.z);
+    if (mineD > range + 1.0) return;
+    const mate = this.players.find((q) => q.team === p.team && q.id !== p.id);
+    // 责任区：落点在后场时前排球员不抢球（交给后排队友），
+    // 只有后排队友明显够不到（已失位）时前排才补位救球。
+    if (mate && Math.abs(p.pos.z) <= 3.0 && Math.abs(landing.z) > 3.4) {
+      const mateBack = Math.abs(mate.pos.z) > 3.0;
+      const mateD = Math.hypot(landing.x - mate.pos.x, landing.z - mate.pos.z);
+      const mateReach = this.autoDigRange(mate) + 1.0;
+      if (mateBack && mateD <= mateReach) return;
+    }
+    // 接球优先权：谁更近且够得着谁接（双方共用同一判定，不会互抢，也不会互相让球）
+    if (mate) {
+      const mateD = Math.hypot(landing.x - mate.pos.x, landing.z - mate.pos.z);
+      const mateCanHit = this.ballInReach(mate) || this.autoDigReach(mate);
+      if (mateCanHit && mateD + 0.8 < mineD) return;
+    }
+    // 起球默认给队友（pass/set 分支会吊向队友）；只有第三拍才处理过网
+    const aim = clamp(-p.pos.x * 0.3 + this.rng(-0.7, 0.7), -3.2, 3.2);
+    if (this.tryHit(p, { ...inp, hit: false, hitHeld: false, aimX: aim }, 'auto')) {
+      this.autoDigs++;
+      p.hitBuffer = 0;
+    }
+  }
+
+  private noteSetFallback(p: Player, reason: 'noMate' | 'touchesExhausted' | 'noReach'): void {
+    this.setFallbacks[reason]++;
+    this.events.emit('setFallback', { playerId: p.id, reason });
+  }
+
+  private autoDigRange(p?: Player): number {
+    const base = this.skill === 'easy' ? 2.15 : this.skill === 'normal' ? 1.95 : 1.75;
+    // 前排球员的自动接球范围收窄：球从头顶飞向后场时不“截胡”，把球留给后排队友
+    if (p && Math.abs(p.pos.z) <= 3.0) return base * 0.55;
+    return base;
+  }
+
+  /** 自动接扣杀的有效范围：简单档更宽，困难档略收紧（三档都可用） */
+  private autoDigReach(p: Player): boolean {
+    const b = this.ball;
+    const dxz = Math.hypot(b.pos.x - p.pos.x, b.pos.z - p.pos.z);
+    const range = this.autoDigRange(p);
+    // 只在球已经下落到可起球高度带时自动触球：
+    // 球还在头顶上方飞向后场时不碰，避免前排的人把属于后场的球“截胡”。
+    const maxY = this.skill === 'easy' ? 2.3 : this.skill === 'normal' ? 2.15 : 2.0;
+    return dxz <= range && b.pos.y >= 0.35 && b.pos.y <= maxY && b.vel.y < 0;
+  }
+
+  /** 预测落点是否在本方半场界内（界外球不自动触球） */
+  private landingInBounds(l: { x: number; z: number }, team: TeamId): boolean {
+    if (Math.abs(l.x) > COURT.halfWidth - BALL.radius * 0.5) return false;
+    if (team === 0) return l.z > 0 && l.z < COURT.halfLength;
+    return l.z < 0 && l.z > -COURT.halfLength;
+  }
+
+  /** 网前「二传」语义按键：扣杀（自动起跳 + 扣球）/ 二传（回传队友） */
+  private stepNetControls(p: Player, inp: ControlInput, dt: number): void {
+    if (inp.spike) p.spikeBuffer = 0.9;
+    if (inp.setup) p.setupBuffer = 0.6;
+    const hadSetup = p.setupBuffer > 0;
+    p.spikeBuffer = Math.max(0, p.spikeBuffer - dt);
+    p.setupBuffer = Math.max(0, p.setupBuffer - dt);
+    if (hadSetup && p.setupBuffer === 0) {
+      // 缓冲耗尽还没碰到球：记一笔“够不着”，不做过网兜底（没触球就没有出球一说）
+      this.noteSetFallback(p, 'noReach');
+    }
+
+    if (p.setupBuffer > 0 && this.ballInReach(p)) {
+      const mate = this.players.find((q) => q.team === p.team && q.id !== p.id);
+      const t = this.touches[p.team];
+      if (!mate) {
+        // 无队友可用：唯一合法的兜底是处理过网
+        p.setupBuffer = 0;
+        this.noteSetFallback(p, 'noMate');
+        this.tryHit(p, inp, 'send');
+      } else if (t >= 2) {
+        // 触球次数已用尽（第三拍）：允许处理过网，否则这一拍就直接丢了
+        p.setupBuffer = 0;
+        this.noteSetFallback(p, 'touchesExhausted');
+        this.tryHit(p, inp, 'send');
+      } else if (this.tryHit(p, inp, 'setup')) {
+        p.setupBuffer = 0;
+        p.spikeBuffer = 0;
+      }
+    }
+
+    if (p.spikeBuffer > 0) {
+      if (!this.canAutoSpike(p)) {
+        // 「扣杀」不合法（球不在可扣高度 / 触球已满 / 球不在己方半场）时：
+        // 球在够得着的范围就退回普通击球，不能变成空按；够不着则清掉缓冲，不触发其他动作
+        p.spikeBuffer = 0;
+        if (this.ballInReach(p)) this.tryHit(p, inp);
+        return;
+      }
+      if (p.grounded && p.stun <= 0) {
+        const tt = this.ballTimeToHeight(PLAYER.spikeMinY + 0.6);
+        if (tt !== null && tt <= 0.62) {
+          p.vel.y = PLAYER.jumpVelocity;
+          p.grounded = false;
+          this.events.emit('jump', { playerId: p.id, block: false });
+        }
+      }
+      if (this.attackWindow(p) && this.tryHit(p, inp)) {
+        p.spikeBuffer = 0;
+      }
+    }
+  }
+
+  /** 「扣杀」合法性：第三拍、球在己方半场且够高够近；不合法时按下也不触发 */
+  private canAutoSpike(p: Player): boolean {
+    if (this.touches[p.team] < 2 || this.touches[p.team] >= 3) return false;
+    const b = this.ball;
+    if (!b.live || b.dead || b.heldBy !== null) return false;
+    const ownSide = p.team === 0 ? b.pos.z > -0.4 : b.pos.z < 0.4;
+    if (!ownSide) return false;
+    if (b.pos.y < PLAYER.spikeMinY - 0.4) return false;
+    if (dist2D(b.pos.x, b.pos.z, p.pos.x, p.pos.z) > 2.6) return false;
     return true;
   }
 
@@ -639,6 +1060,7 @@ export class World {
     b.lastHitterId = p.id;
     this.lastHitterByTeam[p.team] = p.id;
     this.touches = [0, 0];
+    this.lastAttackTime = [-10, -10];
     p.charge = 0;
     p.hitCd = 0.5;
     p.hitBuffer = 0;
@@ -666,10 +1088,13 @@ export class World {
       .filter((p) => p.blocking)
       .map((p) => ({
         playerId: p.id,
+        team: p.team,
         x: p.pos.x,
-        halfW: 0.9,
-        minY: 1.0 + p.pos.y * 0.5,
-        maxY: 3.0 + p.pos.y * 0.5,
+        // 手掌 + 前臂形成的竖直拦截面：水平半宽 0.92m（原 0.78m 对真人横向偏差太苛刻），
+        // 高度从肘部到指尖
+        halfW: this.blockHalfW,
+        minY: p.pos.y + 0.65,
+        maxY: p.pos.y + 2.45,
       }));
     b.step(dt, blockers, (e) => this.onBallEvent(e));
   }
@@ -774,9 +1199,16 @@ export class World {
 
   private setupServe(): void {
     this.resetPlayers();
-    const server = this.players.find(
-      (p) => p.team === this.servingTeam && p.slot === this.teamSize - 1,
-    );
+    // 同队两人轮流发球：按 id 顺序轮转，每次该队开始发球取当前索引后 +1。
+    // 规则：本队得分继续发球 → 下一个轮转人发；换发到对方 → 对方按自己的轮转继续。
+    const teammates = this.players
+      .filter((p) => p.team === this.servingTeam)
+      .sort((a, b) => a.id - b.id);
+    const idx = teammates.length > 0 ? this.serveIndex[this.servingTeam] % teammates.length : 0;
+    const server = teammates[idx];
+    if (teammates.length > 0) {
+      this.serveIndex[this.servingTeam] = (idx + 1) % teammates.length;
+    }
     if (server) {
       this.serverId = server.id;
       const sign = server.team === 0 ? 1 : -1;
@@ -797,10 +1229,12 @@ export class World {
       this.ball.prev = { ...this.ball.pos };
     }
     this.touches = [0, 0];
+    this.lastAttackTime = [-10, -10];
     this.attackPlan = [
       { setterId: null, attackerId: null },
       { setterId: null, attackerId: null },
     ];
+    this.quickAttack = [null, null];
   }
 
   private awardPoint(winner: TeamId): void {
@@ -813,10 +1247,12 @@ export class World {
     this.servingTeam = winner;
     this.slowmoTimer = 0.9;
     this.touches = [0, 0];
+    this.lastAttackTime = [-10, -10];
     this.attackPlan = [
       { setterId: null, attackerId: null },
       { setterId: null, attackerId: null },
     ];
+    this.quickAttack = [null, null];
     this.setPhase('point');
     this.phaseTimer = MATCH.pointSeconds;
     this.events.emit('score', {
