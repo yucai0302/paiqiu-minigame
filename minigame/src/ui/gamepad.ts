@@ -4,10 +4,13 @@ import { clamp } from '../core/math';
 import type { Platform, TouchPoint } from '../platform/types';
 import type { ControlInput } from '../sim/types';
 import { emptyInput } from '../sim/types';
+import type { World } from '../sim/world';
 import { createUiCanvas, makeTexture, roundedRect, uiSprite } from './draw';
 import type { UiLayer } from './layer';
 
 type BtnId = 'jump' | 'hit' | 'block' | 'sprint';
+/** 贴图语义：网前会把「击球→扣杀」「跳跃→二传」换皮，尺寸/命中区不变 */
+type BtnSkin = BtnId | 'spike' | 'set';
 
 interface Btn {
   id: BtnId;
@@ -21,17 +24,22 @@ interface Btn {
   size: number;
   texNormal: THREE.Texture;
   texPressed: THREE.Texture;
+  /** 网前语义的备用贴图（仅击球/跳跃键有） */
+  texNormalAlt?: THREE.Texture;
+  texPressedAlt?: THREE.Texture;
   pointer: number;
 }
 
 const FONT = '"PingFang SC","Microsoft YaHei",system-ui,sans-serif';
 
 /** 四键配色：与角色球衣同一卡通色系（珊瑚红/天蓝/柔紫/明黄） */
-const BTN_STYLE: Record<BtnId, { color: string; label: string }> = {
+const BTN_STYLE: Record<BtnSkin, { color: string; label: string }> = {
   hit: { color: '#ff5d73', label: '击球' },
   jump: { color: '#38bdf8', label: '跳跃' },
   block: { color: '#8b7cf6', label: '拦网' },
   sprint: { color: '#fbbf24', label: '冲刺' },
+  spike: { color: '#ff5d73', label: '扣杀' },
+  set: { color: '#38bdf8', label: '二传' },
 };
 
 /** 摇杆旋钮用我方主色绿，与角色呼应 */
@@ -218,18 +226,97 @@ function iconSprint(ctx: CanvasRenderingContext2D): void {
   ctx.stroke();
 }
 
+/** 扣杀：球 + 向下重砸箭头 + 速度线（糖果质感同色系） */
+function iconSpike(ctx: CanvasRenderingContext2D, base: string): void {
+  ctx.beginPath();
+  ctx.arc(6, -6, 4.2, 0, Math.PI * 2);
+  ctx.fillStyle = '#ffffff';
+  ctx.fill();
+  ctx.lineWidth = 1.6;
+  ctx.strokeStyle = base;
+  ctx.beginPath();
+  ctx.moveTo(2.4, -4.6);
+  ctx.quadraticCurveTo(6, -6, 9.4, -4.2);
+  ctx.stroke();
+  // 下砸箭头
+  ctx.lineWidth = 3.4;
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  ctx.moveTo(-2, -10);
+  ctx.lineTo(-2, 5);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(-8, 0);
+  ctx.lineTo(-2, 8);
+  ctx.lineTo(4, 0);
+  ctx.stroke();
+  // 速度线
+  ctx.lineWidth = 2;
+  for (const [y, x0, x1] of [
+    [-8, -11, -7],
+    [0, -11, -8],
+    [8, -11, -9],
+  ] as const) {
+    ctx.beginPath();
+    ctx.moveTo(x0, y);
+    ctx.lineTo(x1, y);
+    ctx.stroke();
+  }
+}
+
+/** 二传：球 + 双手托起的上抛弧线 */
+function iconSet(ctx: CanvasRenderingContext2D): void {
+  ctx.beginPath();
+  ctx.arc(0, -7, 4.2, 0, Math.PI * 2);
+  ctx.fillStyle = '#ffffff';
+  ctx.fill();
+  ctx.lineWidth = 3;
+  ctx.strokeStyle = '#ffffff';
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  // 双手托球
+  ctx.beginPath();
+  ctx.moveTo(-10, 2);
+  ctx.quadraticCurveTo(-6, 8, -1, 3);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(10, 2);
+  ctx.quadraticCurveTo(6, 8, 1, 3);
+  ctx.stroke();
+  // 上抛箭头
+  ctx.lineWidth = 2.2;
+  ctx.beginPath();
+  ctx.moveTo(-9, -2);
+  ctx.lineTo(-9, -9);
+  ctx.lineTo(-12, -6);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(9, -2);
+  ctx.lineTo(9, -9);
+  ctx.lineTo(12, -6);
+  ctx.stroke();
+}
+
 /** 各键的"设计基准半径"，图标与文字按 r/基准 等比放大，避免大键里图标偏小 */
 const BASE_R: Record<BtnId, number> = { hit: 33, jump: 26, block: 26, sprint: 23 };
+const ALT_OF: Partial<Record<BtnId, BtnSkin>> = { hit: 'spike', jump: 'set' };
 
 /** 按键贴图：烘焙投影 + 上浅下深渐变 + 白描边 + 顶部高光 + 图标 + 文字 */
-function buttonTexture(id: BtnId, r: number, pressed: boolean): { tex: THREE.Texture; size: number } {
-  const { color, label } = BTN_STYLE[id];
+function buttonTexture(
+  skin: BtnSkin,
+  baseId: BtnId,
+  r: number,
+  pressed: boolean,
+): { tex: THREE.Texture; size: number } {
+  const { color, label } = BTN_STYLE[skin];
   const size = Math.ceil(r * 2 + 24);
   const c = size / 2;
   // UI 贴图跟随设备 DPR 烘焙（DPR3 下 1 贴图像素 = 1 设备像素），文字边缘不再二次放大
   const { canvas, ctx } = createUiCanvas(size, size);
   // 图标/文字随按键尺寸等比放大，视觉上仍然"按键变大、图标也变大"
-  const k = r / BASE_R[id];
+  const k = r / BASE_R[baseId];
 
   // 投影
   ctx.beginPath();
@@ -263,9 +350,11 @@ function buttonTexture(id: BtnId, r: number, pressed: boolean): { tex: THREE.Tex
   ctx.save();
   ctx.translate(c, c - r * 0.14);
   ctx.scale(k, k);
-  if (id === 'hit') iconBall(ctx, color);
-  else if (id === 'jump') iconJump(ctx);
-  else if (id === 'block') iconBlock(ctx);
+  if (skin === 'hit') iconBall(ctx, color);
+  else if (skin === 'spike') iconSpike(ctx, color);
+  else if (skin === 'jump') iconJump(ctx);
+  else if (skin === 'set') iconSet(ctx);
+  else if (skin === 'block') iconBlock(ctx);
   else iconSprint(ctx);
   ctx.restore();
 
@@ -303,6 +392,10 @@ export class Gamepad {
   private hitHeld = false;
   private blockHeld = false;
   private sprintHeld = false;
+  private spikeEdge = false;
+  private setupEdge = false;
+  /** 网前进攻区：击球键=扣杀、跳跃键=二传（带滞回，避免边界抖动闪烁） */
+  private netMode = false;
 
   private enabled = false;
   private readonly y0: number;
@@ -353,8 +446,11 @@ export class Gamepad {
   }
 
   private addButton(id: BtnId, x: number, y: number, r: number, hitPad: number): void {
-    const normal = buttonTexture(id, r, false);
-    const pressed = buttonTexture(id, r, true);
+    const normal = buttonTexture(id, id, r, false);
+    const pressed = buttonTexture(id, id, r, true);
+    const alt = ALT_OF[id];
+    const altNormal = alt ? buttonTexture(alt, id, r, false) : undefined;
+    const altPressed = alt ? buttonTexture(alt, id, r, true) : undefined;
     const sprite = uiSprite(normal.tex, normal.size, normal.size, x, this.H - y, 4);
     this.root.add(sprite);
     this.btns.push({
@@ -367,6 +463,8 @@ export class Gamepad {
       size: normal.size,
       texNormal: normal.tex,
       texPressed: pressed.tex,
+      texNormalAlt: altNormal?.tex,
+      texPressedAlt: altPressed?.tex,
       pointer: -1,
     });
   }
@@ -447,7 +545,8 @@ export class Gamepad {
     this.updateVisual();
   }
 
-  read(): ControlInput {
+  read(world?: World): ControlInput {
+    this.refreshNetMode(world);
     if (!this.enabled) {
       this.resetEdges();
       return emptyInput();
@@ -460,15 +559,45 @@ export class Gamepad {
       out.moveZ = this.joyVec.y * k;
     }
     out.sprint = this.sprintHeld;
-    out.jump = this.jumpEdge;
-    out.hit = this.hitEdge;
-    out.hitHeld = this.hitHeld;
     out.block = this.blockEdge;
     out.blockHeld = this.blockHeld;
+    if (this.netMode) {
+      // 网前：击球键=扣杀（自动起跳），跳跃键=二传（回传队友）
+      out.spike = this.spikeEdge;
+      out.setup = this.setupEdge;
+    } else {
+      out.jump = this.jumpEdge;
+      out.hit = this.hitEdge;
+      out.hitHeld = this.hitHeld;
+    }
     this.jumpEdge = false;
     this.hitEdge = false;
     this.blockEdge = false;
+    this.spikeEdge = false;
+    this.setupEdge = false;
     return out;
+  }
+
+  /** 用玩家与网的距离判定进攻区（不用“是否移动”），带 0.5m 滞回 */
+  private refreshNetMode(world?: World): void {
+    if (!world) return;
+    const p = world.players.find((q) => q.id === world.localPlayerId);
+    if (!p) return;
+    const ownSide = p.team === 0 ? p.pos.z > -0.4 : p.pos.z < 0.4;
+    const distNet = Math.abs(p.pos.z);
+    const next =
+      world.phase === 'rally' &&
+      ownSide &&
+      (this.netMode ? distNet <= 3.25 : distNet <= 2.75);
+    if (next === this.netMode) return;
+    this.netMode = next;
+    // 切语义时清掉旧边沿，避免“换皮瞬间误触发”
+    this.jumpEdge = false;
+    this.hitEdge = false;
+    this.hitHeld = false;
+    this.spikeEdge = false;
+    this.setupEdge = false;
+    this.updateVisual();
   }
 
   private hitButton(x: number, y: number): Btn | null {
@@ -483,10 +612,17 @@ export class Gamepad {
 
   private press(btn: Btn, down: boolean): void {
     if (btn.id === 'jump') {
-      if (down) this.jumpEdge = true;
+      if (down) {
+        if (this.netMode) this.setupEdge = true;
+        else this.jumpEdge = true;
+      }
     } else if (btn.id === 'hit') {
-      this.hitHeld = down;
-      if (down) this.hitEdge = true;
+      if (this.netMode) {
+        if (down) this.spikeEdge = true;
+      } else {
+        this.hitHeld = down;
+        if (down) this.hitEdge = true;
+      }
     } else if (btn.id === 'block') {
       this.blockHeld = down;
       if (down) this.blockEdge = true;
@@ -499,6 +635,8 @@ export class Gamepad {
     this.jumpEdge = false;
     this.hitEdge = false;
     this.blockEdge = false;
+    this.spikeEdge = false;
+    this.setupEdge = false;
   }
 
   private releaseAll(): void {
@@ -527,9 +665,16 @@ export class Gamepad {
 
     for (const b of this.btns) {
       const down = b.pointer >= 0;
+      const alt = this.netMode && b.texNormalAlt !== undefined;
       // 两张贴图常驻复用，直接换 map，不走 setSpriteTexture（它会 dispose 旧贴图）
       const mat = b.sprite.material as THREE.SpriteMaterial;
-      mat.map = down ? b.texPressed : b.texNormal;
+      mat.map = down
+        ? alt
+          ? b.texPressedAlt!
+          : b.texPressed
+        : alt
+          ? b.texNormalAlt!
+          : b.texNormal;
       mat.needsUpdate = true;
       // 按压反馈：收缩 + 轻微下沉（比只换颜色更明确）
       b.sprite.scale.setScalar(b.size * (down ? 0.86 : 1));

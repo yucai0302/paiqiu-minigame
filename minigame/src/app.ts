@@ -390,7 +390,7 @@ export class App {
     if (this.mode === 'host') {
       // 房主：pid 0 吃本地手柄，pid 1 吃好友上行输入
       world.inputProvider = (pid) =>
-        pid === 0 ? this.pad.read() : this.remoteBuf.take(this.platform.now());
+        pid === 0 ? this.pad.read(this.world) : this.remoteBuf.take(this.platform.now());
     }
     this.world = world;
     this.scene.build(world);
@@ -564,7 +564,7 @@ export class App {
       humanCount: 1,
       humanName: '你',
     });
-    world.inputProvider = () => this.pad.read();
+    world.inputProvider = () => this.pad.read(world);
     this.scene.build(world);
     this.wire(world);
     return world;
@@ -839,7 +839,7 @@ export class App {
         if (this.mode === 'guest') {
           // 客机：不跑仿真；快照回灌 + 插值 + 输入上行
           this.mirror?.update(now);
-          this.net?.sendInput(this.pad.read());
+          this.net?.sendInput(this.pad.read(this.world));
           this.scene.sync(this.world, this.mirror?.alpha ?? 1, dt);
           this.audio.update(dt);
         } else {
